@@ -1,0 +1,64 @@
+# Site Analysis: https://stripe.com
+
+Score: 1/5 (Basic Web Presence)
+
+The following issues were found. Fix them to improve your agent-readiness score:
+
+## Include Link response headers for agent discovery (RFC 8288)
+Add Link response headers to your homepage pointing to API docs, catalogs, or machine-readable descriptions.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/link-headers/SKILL.md
+
+## Support Accept: text/markdown content negotiation for machine-readable content
+Enable Markdown for Agents so requests with Accept: text/markdown return a markdown version of your HTML.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/markdown-negotiation/SKILL.md
+
+## Declare AI content usage preferences with Content Signals in robots.txt
+Add Content-Signal directives to your robots.txt declaring preferences for ai-train, search, and ai-input.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/content-signals/SKILL.md
+
+## Publish an API catalog for automated API discovery (RFC 9727)
+Create /.well-known/api-catalog returning application/linkset+json with a "linkset" array listing your APIs and their specs.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/api-catalog/SKILL.md
+
+## Publish OAuth/OIDC discovery metadata so agents can authenticate with your APIs
+If your site has protected APIs, publish /.well-known/openid-configuration or /.well-known/oauth-authorization-server with your auth server metadata.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/oauth-discovery/SKILL.md
+
+## Publish OAuth Protected Resource Metadata so agents can discover how to authenticate
+Publish /.well-known/oauth-protected-resource with your resource identifier and authorization_servers so agents can discover how to authenticate.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/oauth-protected-resource/SKILL.md
+
+## Publish an MCP Server Card for agent discovery
+Serve an MCP Server Card (SEP-1649) at /.well-known/mcp/server-card.json with serverInfo, transport endpoint, and capabilities.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/mcp-server-card/SKILL.md
+
+## Publish an A2A Agent Card for agent-to-agent discovery
+Serve an A2A Agent Card at /.well-known/agent-card.json with your agent name, version, supported interfaces, capabilities, and skills.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/a2a-agent-card/SKILL.md
+
+## Publish an agent skills discovery index
+Publish a skills index at /.well-known/agent-skills/index.json listing skill names, types, descriptions, URLs, and digests.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/agent-skills/SKILL.md
+
+## Support WebMCP to expose site tools to AI agents via the browser
+Implement the WebMCP API by calling navigator.modelContext.registerTool() for each tool that exposes your site's key actions to AI agents.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/webmcp/SKILL.md
+
+## Support x402 protocol for agent-native HTTP payments
+Add x402 payment middleware to your API routes to enable agent-native HTTP payments.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/x402/SKILL.md
+
+## Support MPP (Machine Payment Protocol) for agent-native HTTP payments
+Publish an OpenAPI document at /openapi.json with x-payment-info extensions for MPP payment discovery.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/mpp/SKILL.md
+
+## Enable content payments via Universal Commerce Protocol
+Serve /.well-known/ucp with protocol version, services, capabilities, and endpoints.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/ucp/SKILL.md
+
+## Publish ACP discovery metadata so agents can discover your commerce API
+Serve /.well-known/acp.json with protocol metadata, api_base_url, transports, and capabilities.services.
+Implementation guide: https://isitagentready.com/.well-known/agent-skills/acp/SKILL.md
+
+## Support the Agent Payments Protocol (AP2) for secure agent-driven payments
+Declare AP2 support in your A2A Agent Card extensions with your role (merchant, shopper, etc.) to enable agent-driven payments.
