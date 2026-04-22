@@ -103,6 +103,9 @@ export const EvidenceResponseSchema = z.object({
   status: z.number(),
   statusText: z.string(),
   headers: z.record(z.string(), z.string()),
+  // Truncated response body preview. Matches the real Cloudflare scanner
+  // output: first 500 chars of the body, with "..." suffix when truncated.
+  bodyPreview: z.string().optional(),
 });
 export type EvidenceResponse = z.infer<typeof EvidenceResponseSchema>;
 
@@ -118,7 +121,6 @@ export const EvidenceStepSchema = z.object({
   request: EvidenceRequestSchema.optional(),
   response: EvidenceResponseSchema.optional(),
   finding: EvidenceFindingSchema,
-  body: z.string().optional(),
 });
 export type EvidenceStep = z.infer<typeof EvidenceStepSchema>;
 
