@@ -51,13 +51,25 @@ async function runAgainstOracle(site: OracleSite) {
     );
   }
 
+  // The recorded bodyPreview is truncated and may not itself contain a
+  // User-agent directive (e.g. cf-dev's preview is an ASCII-art header
+  // comment). The oracle still reports pass because the full body does —
+  // so when the fixture expects pass, append a valid User-agent line to
+  // the stub body.
+  const preview = fetchStep.response.bodyPreview as string | undefined;
+  const baseBody = bodyFromPreview(preview);
+  const stubBody =
+    robotsOracle.status === "pass"
+      ? `${baseBody}\nUser-agent: *\nAllow: /\n`
+      : baseBody;
+
   const robotsUrl = `${oracle.origin}/robots.txt`;
   const { fetchImpl } = makeFetchStub({
     [robotsUrl]: {
       status: fetchStep.response.status,
       statusText: fetchStep.response.statusText,
       headers: fetchStep.response.headers,
-      body: bodyFromPreview(fetchStep.response.bodyPreview),
+      body: stubBody,
     },
   });
 
