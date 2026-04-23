@@ -39,7 +39,6 @@ async function runAgainstOracle(site: OracleSite) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const cardOracle = oracle.raw.checks.discovery.a2aAgentCard as any;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fetchStep = cardOracle.evidence.find(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (s: any) => s.action === "fetch",

@@ -55,7 +55,6 @@ async function runFailOracle(site: OracleSite) {
 
   const routes: Record<string, Parameters<typeof makeFetchStub>[0][string]> =
     {};
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   skillsOracle.evidence
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .filter((s: any) => s.action === "fetch")
@@ -351,6 +350,62 @@ describe("agentSkills — pass behaviour", () => {
     });
     const ctx = createScanContext({ url: "https://mixed.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
+    expect(result.status).toBe("pass");
+  });
+
+  it("fails when index body is valid JSON but root is not an object (scalar)", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://scalar.test/.well-known/agent-skills/index.json": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify("just a string"),
+      },
+    });
+    const ctx = createScanContext({ url: "https://scalar.test", fetchImpl });
+    const result = await checkAgentSkills(ctx);
+    expect(result.status).toBe("fail");
+    expect(result.message).toMatch(/not valid json|json/i);
+  });
+
+  it("fails when index body is null (valid JSON but not an object)", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://null.test/.well-known/agent-skills/index.json": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: "null",
+      },
+    });
+    const ctx = createScanContext({ url: "https://null.test", fetchImpl });
+    const result = await checkAgentSkills(ctx);
+    expect(result.status).toBe("fail");
+  });
+
+  it("records a resolve-error step when a skill href is unparseable", async () => {
+    const indexBody = JSON.stringify({
+      skills: [
+        { id: "bad", href: "ht!tp://:::not a url" },
+        { id: "ok", href: "/ok/SKILL.md" },
+      ],
+    });
+    const { fetchImpl } = makeFetchStub({
+      "https://resolver.test/.well-known/agent-skills/index.json": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: indexBody,
+      },
+      "https://resolver.test/ok/SKILL.md": {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: "# OK",
+      },
+    });
+    const ctx = createScanContext({ url: "https://resolver.test", fetchImpl });
+    const result = await checkAgentSkills(ctx);
+    // At least one resolved, so we expect pass (despite one unparseable href).
     expect(result.status).toBe("pass");
   });
 

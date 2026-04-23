@@ -313,6 +313,72 @@ describe("webMcp — fail paths", () => {
 // Evidence shape
 // ---------------------------------------------------------------------------
 
+describe("webMcp — robustness", () => {
+  it("records the fallback summary when the homepage transport error has no message", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://silent.test/": new Error(""),
+    });
+    const ctx = createScanContext({ url: "https://silent.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    expect(result.status).toBe("fail");
+    const fetchStep = result.evidence.find((s) => s.action === "fetch")!;
+    expect(fetchStep.finding.summary).toBe(
+      "Homepage request failed with no response",
+    );
+  });
+
+  it("records a transport-error summary when a linked same-origin script errors", async () => {
+    const html = `<html><body>
+      <script src="/broken.js"></script>
+    </body></html>`;
+    const { fetchImpl } = makeFetchStub({
+      "https://scripterr.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+      "https://scripterr.test/broken.js": new Error("ECONNRESET"),
+    });
+    const ctx = createScanContext({ url: "https://scripterr.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    expect(result.status).toBe("fail");
+    const errStep = result.evidence.find((s) =>
+      s.finding.summary.toLowerCase().includes("fetch failed"),
+    );
+    expect(errStep).toBeDefined();
+  });
+
+  it("records a parse-error step when a script src URL is unparseable", async () => {
+    const html = `<html><body>
+      <script src="http://"></script>
+      <script src="/ok.js"></script>
+    </body></html>`;
+    const { fetchImpl } = makeFetchStub({
+      "https://badsrc.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+      "https://badsrc.test/ok.js": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/javascript" },
+        body: "navigator.modelContext.registerTool({});",
+      },
+    });
+    const ctx = createScanContext({ url: "https://badsrc.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    // The unparseable entry is recorded, and the good one still passes.
+    expect(result.status).toBe("pass");
+    const parseErr = result.evidence.find((s) =>
+      s.finding.summary.toLowerCase().includes("could not parse script url"),
+    );
+    expect(parseErr).toBeDefined();
+  });
+});
+
 describe("webMcp — evidence shape", () => {
   it("records a fetch step for the homepage probe", async () => {
     const html = "<html/>";
