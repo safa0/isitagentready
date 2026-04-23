@@ -28,10 +28,6 @@ const CONCLUDE_LABEL = "Conclusion";
 const PASS_MESSAGE = "ACP discovery document found";
 const FAIL_MESSAGE = "ACP discovery document not found";
 
-interface Options {
-  readonly isCommerce: boolean;
-}
-
 function isNonEmptyArray(v: unknown): boolean {
   return Array.isArray(v) && v.length > 0;
 }
@@ -123,7 +119,6 @@ function evaluate(outcome: FetchOutcome): {
 
 export async function checkAcp(
   ctx: ScanContext,
-  opts: Options,
 ): Promise<CheckResult> {
   const started = Date.now();
   const outcome = await ctx.fetch("/.well-known/acp.json");
@@ -151,7 +146,7 @@ export async function checkAcp(
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -168,6 +163,6 @@ export async function checkAcp(
       evidence,
       durationMs: Date.now() - started,
     },
-    opts.isCommerce,
+    ctx.isCommerce,
   );
 }

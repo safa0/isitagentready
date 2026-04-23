@@ -28,9 +28,9 @@ describe("ucp — shopify oracle (isCommerce=true)", () => {
         },
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
 
-    const result = await checkUcp(ctx, { isCommerce: true });
+    const result = await checkUcp(ctx);
 
     expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("fail");
@@ -53,8 +53,8 @@ describe("ucp — shopify oracle (isCommerce=true)", () => {
         body,
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkUcp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkUcp(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -68,8 +68,8 @@ describe("ucp — shopify oracle (isCommerce=true)", () => {
         body,
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkUcp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkUcp(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -78,8 +78,8 @@ describe("ucp — shopify oracle (isCommerce=true)", () => {
     const { fetchImpl } = makeFetchStub({
       [`${origin}/.well-known/ucp`]: new Error("ECONNRESET"),
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkUcp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkUcp(ctx);
     expect(result.status).toBe("fail");
   });
 });
@@ -102,8 +102,8 @@ describe("ucp — gating across origins", () => {
           headers: { "content-type": "text/plain;charset=UTF-8" },
         },
       });
-      const ctx = createScanContext({ url: fixture.origin, fetchImpl });
-      const result = await checkUcp(ctx, { isCommerce });
+      const ctx = createScanContext({ url: fixture.origin, fetchImpl, isCommerce });
+      const result = await checkUcp(ctx);
       expect(result.status).toBe(oracle.status);
       expect(result.message).toBe(oracle.message);
     },
@@ -120,7 +120,7 @@ describe("ucp — non-commerce gating", () => {
       },
     });
     const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkUcp(ctx, { isCommerce: false });
+    const result = await checkUcp(ctx);
     expect(result.status).toBe("neutral");
     expect(result.message).toBe("UCP profile not found (not a commerce site)");
   });

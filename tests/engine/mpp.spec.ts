@@ -27,9 +27,9 @@ describe("mpp — shopify oracle (isCommerce=true)", () => {
         headers: { "content-type": "text/html; charset=utf-8" },
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
 
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const result = await checkMpp(ctx);
 
     expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("fail");
@@ -51,8 +51,8 @@ describe("mpp — shopify oracle (isCommerce=true)", () => {
         body,
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -65,8 +65,8 @@ describe("mpp — shopify oracle (isCommerce=true)", () => {
         body: "<html></html>",
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -75,8 +75,8 @@ describe("mpp — shopify oracle (isCommerce=true)", () => {
     const { fetchImpl } = makeFetchStub({
       [`${origin}/openapi.json`]: new Error("ECONNRESET"),
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("fail");
   });
 });
@@ -95,8 +95,8 @@ describe("mpp — additional coverage", () => {
         body,
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -119,8 +119,8 @@ describe("mpp — additional coverage", () => {
         body,
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -134,8 +134,8 @@ describe("mpp — additional coverage", () => {
         body,
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -148,8 +148,8 @@ describe("mpp — additional coverage", () => {
         body: "not json",
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -161,8 +161,8 @@ describe("mpp — additional coverage", () => {
         headers: { "content-type": "text/plain" },
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("fail");
   });
 });
@@ -185,8 +185,8 @@ describe("mpp — gating across origins", () => {
           headers: { "content-type": "text/html; charset=utf-8" },
         },
       });
-      const ctx = createScanContext({ url: fixture.origin, fetchImpl });
-      const result = await checkMpp(ctx, { isCommerce });
+      const ctx = createScanContext({ url: fixture.origin, fetchImpl, isCommerce });
+      const result = await checkMpp(ctx);
       expect(result.status).toBe(oracle.status);
       expect(result.message).toBe(oracle.message);
     },
@@ -204,7 +204,7 @@ describe("mpp — non-commerce gating", () => {
       },
     });
     const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkMpp(ctx, { isCommerce: false });
+    const result = await checkMpp(ctx);
     expect(result.status).toBe("neutral");
     expect(result.message).toBe(
       "MPP payment discovery not detected (not a commerce site)",

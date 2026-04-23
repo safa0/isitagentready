@@ -5,15 +5,13 @@
  * Oracle: research/raw/scan-*.json → checks.commerce.ap2
  *
  * AP2 has no direct probe. Its verdict is derived from the a2aAgentCard
- * result produced by impl-C. To avoid a cyclic dependency (and to allow
- * Phase 2 fan-out before impl-C merges), `checkAp2` accepts the a2a card's
- * CheckResult as a nullable parameter. When `null` (card not yet computed
- * or opt-out), the check reports the same "no A2A Agent Card" conclusion
- * as a failing a2a result — this mirrors the shopify / vercel oracles,
- * which both record a missing card.
+ * result carried on the `ScanContext`. When `ctx.a2aAgentCard === null`
+ * (card not yet computed or opt-out), the check reports the same
+ * "no A2A Agent Card" conclusion as a failing a2a result — this mirrors
+ * the shopify / vercel oracles, which both record a missing card.
  *
  * isCommerce gating: same as the other commerce checks — when
- * `isCommerce === false`, status is forced to "neutral" and
+ * `ctx.isCommerce === false`, status is forced to "neutral" and
  * " (not a commerce site)" is appended to the message. The conclusion
  * finding summary is preserved verbatim.
  */
@@ -22,6 +20,7 @@ import { describe, it, expect } from "vitest";
 
 import { CheckResultSchema, type CheckResult } from "@/lib/schema";
 import { checkAp2 } from "@/lib/engine/checks/ap2";
+import { createScanContext } from "@/lib/engine/context";
 import { ALL_SITES, loadOracle } from "./_helpers/oracle";
 
 // ---------------------------------------------------------------------------
@@ -65,16 +64,30 @@ function a2aPassWithSkill(skills: string[]): CheckResult {
   };
 }
 
+const NOOP_FETCH: typeof fetch = async () =>
+  new Response("", { status: 404 });
+
+function ctxWith(opts: {
+  readonly isCommerce: boolean;
+  readonly a2aAgentCard: CheckResult | null;
+}) {
+  return createScanContext({
+    url: "https://example.test",
+    fetchImpl: NOOP_FETCH,
+    isCommerce: opts.isCommerce,
+    a2aAgentCard: opts.a2aAgentCard,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Shopify / commerce oracle round-trip
 // ---------------------------------------------------------------------------
 
 describe("ap2 — shopify oracle (isCommerce=true)", () => {
   it("fails with a single conclude step when no A2A card is available", async () => {
-    const result = await checkAp2({
-      isCommerce: true,
-      a2aAgentCard: a2aFail(),
-    });
+    const result = await checkAp2(
+      ctxWith({ isCommerce: true, a2aAgentCard: a2aFail() }),
+    );
 
     expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("fail");
@@ -90,25 +103,31 @@ describe("ap2 — shopify oracle (isCommerce=true)", () => {
   });
 
   it("fails with the same conclusion when the a2a result is null (not yet computed)", async () => {
-    const result = await checkAp2({ isCommerce: true, a2aAgentCard: null });
+    const result = await checkAp2(
+      ctxWith({ isCommerce: true, a2aAgentCard: null }),
+    );
     expect(result.status).toBe("fail");
     expect(result.message).toBe("AP2 not detected (no A2A Agent Card)");
   });
 
   it("passes when the A2A card advertises an AP2-compatible commerce skill", async () => {
-    const result = await checkAp2({
-      isCommerce: true,
-      a2aAgentCard: a2aPassWithSkill(["ap2.payments", "catalog"]),
-    });
+    const result = await checkAp2(
+      ctxWith({
+        isCommerce: true,
+        a2aAgentCard: a2aPassWithSkill(["ap2.payments", "catalog"]),
+      }),
+    );
     expect(result.status).toBe("pass");
     expect(result.message).toMatch(/AP2/i);
   });
 
   it("fails when the A2A card passes but declares no commerce-related skill", async () => {
-    const result = await checkAp2({
-      isCommerce: true,
-      a2aAgentCard: a2aPassWithSkill(["weather", "support"]),
-    });
+    const result = await checkAp2(
+      ctxWith({
+        isCommerce: true,
+        a2aAgentCard: a2aPassWithSkill(["weather", "support"]),
+      }),
+    );
     expect(result.status).toBe("fail");
   });
 });
@@ -117,11 +136,6 @@ describe("ap2 — shopify oracle (isCommerce=true)", () => {
 // Non-commerce gating
 // ---------------------------------------------------------------------------
 
-// These tests assert that the check's gating behaviour (status + message)
-// is consistent across all oracle origins when the probe responses are
-// stubbed to the negative baseline. They do NOT replay the full evidence
-// timeline structurally — that is deferred pending real pass-case
-// fixtures, after which we'd switch to `expectCheckMatchesOracle`.
 describe("ap2 — gating across origins", () => {
   it.each(ALL_SITES)(
     "matches the oracle status + message for %s",
@@ -130,7 +144,9 @@ describe("ap2 — gating across origins", () => {
       const oracle = fixture.raw.checks.commerce.ap2;
       const isCommerce = Boolean(fixture.raw.isCommerce);
       // All 5 oracles record a missing A2A card, so we pass `null`.
-      const result = await checkAp2({ isCommerce, a2aAgentCard: null });
+      const result = await checkAp2(
+        ctxWith({ isCommerce, a2aAgentCard: null }),
+      );
       expect(result.status).toBe(oracle.status);
       expect(result.message).toBe(oracle.message);
     },
@@ -139,12 +155,13 @@ describe("ap2 — gating across origins", () => {
 
 describe("ap2 — non-commerce gating", () => {
   it("returns neutral with suffix when the site is not commerce", async () => {
-    const result = await checkAp2({ isCommerce: false, a2aAgentCard: null });
+    const result = await checkAp2(
+      ctxWith({ isCommerce: false, a2aAgentCard: null }),
+    );
     expect(result.status).toBe("neutral");
     expect(result.message).toBe(
       "AP2 not detected (no A2A Agent Card) (not a commerce site)",
     );
-    // Inner conclusion summary stays the same.
     const step = result.evidence[0];
     expect(step).toBeDefined();
     expect(step?.finding.summary).toBe(
@@ -153,12 +170,13 @@ describe("ap2 — non-commerce gating", () => {
   });
 
   it("keeps the pass-path conclusion when a2a passes but site is not commerce", async () => {
-    const result = await checkAp2({
-      isCommerce: false,
-      a2aAgentCard: a2aPassWithSkill(["ap2.payments"]),
-    });
+    const result = await checkAp2(
+      ctxWith({
+        isCommerce: false,
+        a2aAgentCard: a2aPassWithSkill(["ap2.payments"]),
+      }),
+    );
     expect(result.status).toBe("neutral");
-    // Message suffix appended, but the underlying derivation is preserved.
     expect(result.message).toMatch(/not a commerce site/);
   });
 });

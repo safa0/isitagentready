@@ -18,6 +18,7 @@
  */
 
 import type {
+  CheckResult,
   EvidenceAction,
   EvidenceStep,
   FindingOutcome,
@@ -57,6 +58,19 @@ export interface ScanContextOptions {
   readonly fetchImpl?: typeof fetch;
   /** Monotonic clock source for durationMs measurement. Defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Whether the site under scan is a commerce site. Set by the orchestrator
+   * after `detectCommerce`. Commerce checks read this off the context
+   * instead of accepting a bespoke opts parameter.
+   */
+  readonly isCommerce?: boolean;
+  /**
+   * Result of the `a2aAgentCard` check from the same scan. Passed in so
+   * dependent checks (notably `ap2`) can read it without re-running the
+   * check. `null` when the user has opted out of the a2a check, or when the
+   * scan context is created before the a2a probe runs.
+   */
+  readonly a2aAgentCard?: CheckResult | null;
 }
 
 export interface FetchRequestRecord {
@@ -94,6 +108,10 @@ export interface ScanContext {
   readonly url: URL;
   readonly userAgent: string;
   readonly timeoutMs: number;
+  /** Whether the site under scan is a commerce site (default: false). */
+  readonly isCommerce: boolean;
+  /** The `a2aAgentCard` check result from the same scan (null if not run). */
+  readonly a2aAgentCard: CheckResult | null;
   /** Resolve an absolute URL or site-relative path against the scan origin. */
   resolve(pathOrUrl: string): URL;
   /** Perform a single fetch and return a standardised outcome record. */
@@ -295,6 +313,8 @@ export function createScanContext(options: ScanContextOptions): ScanContext {
     url,
     userAgent,
     timeoutMs,
+    isCommerce: options.isCommerce ?? false,
+    a2aAgentCard: options.a2aAgentCard ?? null,
     resolve,
     fetch: doFetch,
     getHomepage,

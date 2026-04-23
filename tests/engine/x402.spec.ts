@@ -56,9 +56,9 @@ describe("x402 — shopify oracle (isCommerce=true)", () => {
         headers: { "content-type": "text/html; charset=utf-8" },
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
 
-    const result = await checkX402(ctx, { isCommerce: true });
+    const result = await checkX402(ctx);
 
     expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("fail");
@@ -89,8 +89,8 @@ describe("x402 — shopify oracle (isCommerce=true)", () => {
       },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -108,8 +108,8 @@ describe("x402 — shopify oracle (isCommerce=true)", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 });
@@ -131,8 +131,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -152,8 +152,8 @@ describe("x402 — additional coverage", () => {
         body: JSON.stringify({ x402Version: 1 }),
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -165,8 +165,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
     const bazaarStep = result.evidence[1];
     expect(bazaarStep).toBeDefined();
@@ -181,8 +181,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
     const bazaarStep = result.evidence[1];
     expect(bazaarStep).toBeDefined();
@@ -201,8 +201,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -218,8 +218,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -237,8 +237,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -263,8 +263,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -291,8 +291,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     // If the malformed URL threw unhandled, the outer bazaarMatchesHost
     // try/catch would swallow it and drop the valid entry → fail. A pass
     // here proves hostMatches skipped the bad candidate and continued.
@@ -318,8 +318,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
   });
 
@@ -335,8 +335,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -360,8 +360,8 @@ describe("x402 — additional coverage", () => {
       },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
     const apiStep = result.evidence[2];
     expect(apiStep).toBeDefined();
@@ -386,8 +386,8 @@ describe("x402 — additional coverage", () => {
       },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -403,8 +403,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
     const homeStep = result.evidence[0];
     expect(homeStep).toBeDefined();
@@ -426,8 +426,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -443,8 +443,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -461,8 +461,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -483,8 +483,8 @@ describe("x402 — additional coverage", () => {
       [`${origin}/api`]: { status: 404 },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("pass");
   });
 
@@ -505,8 +505,8 @@ describe("x402 — additional coverage", () => {
       },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
     const apiStep = result.evidence[2];
     expect(apiStep?.finding.summary).toMatch(
@@ -530,8 +530,8 @@ describe("x402 — additional coverage", () => {
       },
       [`${origin}/api/v1`]: { status: 404 },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: true });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: true });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("fail");
   });
 });
@@ -562,8 +562,8 @@ describe("x402 — gating across origins", () => {
         [`${fixture.origin}/api`]: { status: 404 },
         [`${fixture.origin}/api/v1`]: { status: 404 },
       });
-      const ctx = createScanContext({ url: fixture.origin, fetchImpl });
-      const result = await checkX402(ctx, { isCommerce });
+      const ctx = createScanContext({ url: fixture.origin, fetchImpl, isCommerce });
+      const result = await checkX402(ctx);
       expect(result.status).toBe(oracle.status);
       expect(result.message).toBe(oracle.message);
     },
@@ -593,8 +593,8 @@ describe("x402 — non-commerce gating", () => {
         headers: { "content-type": "application/json; charset=utf-8" },
       },
     });
-    const ctx = createScanContext({ url: origin, fetchImpl });
-    const result = await checkX402(ctx, { isCommerce: false });
+    const ctx = createScanContext({ url: origin, fetchImpl, isCommerce: false });
+    const result = await checkX402(ctx);
     expect(result.status).toBe("neutral");
     expect(result.message).toBe(
       "x402 payment protocol not detected (not a commerce site)",

@@ -35,10 +35,6 @@ const CONCLUDE_LABEL = "Conclusion";
 const FAIL_MESSAGE = "x402 payment protocol not detected";
 const PASS_MESSAGE = "x402 payment protocol detected";
 
-interface Options {
-  readonly isCommerce: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -204,7 +200,6 @@ function bazaarCount(body: string): number {
 
 export async function checkX402(
   ctx: ScanContext,
-  opts: Options,
 ): Promise<CheckResult> {
   const started = Date.now();
 
@@ -277,7 +272,7 @@ export async function checkX402(
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -294,6 +289,6 @@ export async function checkX402(
       evidence,
       durationMs: Date.now() - started,
     },
-    opts.isCommerce,
+    ctx.isCommerce,
   );
 }

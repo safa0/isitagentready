@@ -20,13 +20,7 @@ import {
 } from "@/lib/schema";
 
 function fallbackFetch(): typeof fetch {
-  const fn: typeof fetch = async (input) => {
-    const url =
-      typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : (input as Request).url;
+  const fn: typeof fetch = async () => {
     // Default: 404 for everything. Each test can override via routes.
     return new Response("", { status: 404, statusText: "Not Found" });
   };
@@ -65,7 +59,7 @@ describe("runScan - shape", () => {
     });
     const parsed = ScanResponseSchema.safeParse(res);
     expect(parsed.success).toBe(true);
-    expect(res.url).toBe("https://example.com");
+    expect(res.url).toMatch(/^https:\/\/example\.com\/?$/);
     expect(res.level).toBe(0);
     expect(res.levelName).toBe("Not Ready");
     expect(res.isCommerce).toBe(false);

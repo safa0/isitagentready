@@ -24,7 +24,7 @@
  * and conclusion finding are preserved verbatim.
  */
 
-import { makeStep } from "@/lib/engine/context";
+import { makeStep, type ScanContext } from "@/lib/engine/context";
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
 import { applyCommerceGate } from "@/lib/engine/commerce-signals";
 
@@ -58,16 +58,6 @@ const AP2_SKILL_TOKENS = [
   "payments",
   "checkout",
 ] as const;
-
-interface Options {
-  readonly isCommerce: boolean;
-  /**
-   * Result of the `a2aAgentCard` check from the same scan. Nullable to
-   * accommodate callers (orchestrator, tests) that haven't yet computed
-   * it — treated as "no card present".
-   */
-  readonly a2aAgentCard: CheckResult | null;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,10 +103,10 @@ function hasAp2Skill(tokens: readonly string[]): boolean {
 // Main
 // ---------------------------------------------------------------------------
 
-export async function checkAp2(opts: Options): Promise<CheckResult> {
+export async function checkAp2(ctx: ScanContext): Promise<CheckResult> {
   const started = Date.now();
 
-  const a2a = opts.a2aAgentCard;
+  const a2a = ctx.a2aAgentCard;
   const cardMissing = a2a === null || a2a.status !== "pass";
 
   if (cardMissing) {
@@ -133,7 +123,7 @@ export async function checkAp2(opts: Options): Promise<CheckResult> {
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -152,7 +142,7 @@ export async function checkAp2(opts: Options): Promise<CheckResult> {
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -169,6 +159,6 @@ export async function checkAp2(opts: Options): Promise<CheckResult> {
       evidence,
       durationMs: Date.now() - started,
     },
-    opts.isCommerce,
+    ctx.isCommerce,
   );
 }
