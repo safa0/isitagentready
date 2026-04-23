@@ -128,12 +128,15 @@ export async function checkApiCatalog(ctx: ScanContext): Promise<CheckResult> {
     linkset === undefined ||
     linkset.length === 0
   ) {
-    const reason =
-      linkset === undefined
+    // Failure-reason ladder: check content-type first, then body shape. This
+    // keeps the message precise when both are wrong (a JSON body with the
+    // wrong content-type is reported as a content-type mismatch, not as
+    // "not a linkset JSON document").
+    const reason = !isLinksetJson(contentType)
+      ? `Unexpected content-type ${contentType ?? "(none)"} -- expected application/linkset+json`
+      : linkset === undefined
         ? "Response body is not a linkset JSON document"
-        : linkset.length === 0
-          ? "Linkset is empty"
-          : `Unexpected content-type ${contentType ?? "(none)"} -- expected application/linkset+json`;
+        : "Linkset is empty";
     evidence.push(
       fetchToStep(outcome, FETCH_LABEL, {
         outcome: "negative",

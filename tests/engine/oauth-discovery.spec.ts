@@ -105,6 +105,21 @@ describe("checkOauthDiscovery — oracle fixtures", () => {
         "conclude",
       );
 
+      // On the 5-step pass path (vercel) pin the middle-of-evidence order so
+      // the per-endpoint grouping (fetch → validate adjacency) we guarantee
+      // is locked in, not just the terminals.
+      if (result.evidence.length === 5) {
+        expect(result.evidence[1]!.label).toBe(
+          "Validate oauth-authorization-server structure",
+        );
+        expect(result.evidence[2]!.label).toBe(
+          "GET /.well-known/openid-configuration",
+        );
+        expect(result.evidence[3]!.label).toBe(
+          "Validate openid-configuration structure",
+        );
+      }
+
       // Per-fixture details parity (when the oracle has them).
       if (oracle.details?.grantTypes !== undefined) {
         expect(result.details?.grantTypes).toEqual(oracle.details.grantTypes);
@@ -302,6 +317,47 @@ describe("checkOauthDiscovery — edge cases", () => {
       "GET /.well-known/oauth-authorization-server",
     );
     expect(result.evidence[1]!.label).toBe(
+      "GET /.well-known/openid-configuration",
+    );
+  });
+
+  it("preserves dispatch order when the delayed endpoint is the one that passes", async () => {
+    // The delayed endpoint (oauth-authorization-server) returns 200 JSON; the
+    // fast endpoint (openid-configuration) returns 404. Evidence must still
+    // emit fetch+validate for oauth-authorization-server BEFORE the 404 fetch
+    // for openid-configuration — proving dispatch ordering even when the
+    // evidence stream interleaves fetch+validate steps.
+    const fetchImpl: typeof fetch = async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.endsWith("/oauth-authorization-server")) {
+        await new Promise((r) => setTimeout(r, 20));
+        return new Response(
+          JSON.stringify({
+            issuer: "https://example.com",
+            authorization_endpoint: "https://example.com/oauth/authorize",
+            token_endpoint: "https://example.com/oauth/token",
+            jwks_uri: "https://example.com/.well-known/jwks",
+          }),
+          { status: 200, headers: JSON_HEADERS },
+        );
+      }
+      return new Response("", { status: 404 });
+    };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkOauthDiscovery(ctx);
+    expect(result.status).toBe("pass");
+    expect(result.evidence[0]!.label).toBe(
+      "GET /.well-known/oauth-authorization-server",
+    );
+    expect(result.evidence[1]!.label).toBe(
+      "Validate oauth-authorization-server structure",
+    );
+    expect(result.evidence[2]!.label).toBe(
       "GET /.well-known/openid-configuration",
     );
   });

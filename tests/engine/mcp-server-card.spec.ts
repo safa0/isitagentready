@@ -231,4 +231,37 @@ describe("checkMcpServerCard — edge cases", () => {
       expect(result.evidence[i]!.label).toBe(DISPATCH_ORDER[i]);
     }
   });
+
+  it("preserves dispatch order when the delayed endpoint is the one that passes", async () => {
+    // Delay server-card.json AND make it the passing 200 JSON; the fast
+    // endpoints both 404. Dispatch-order emission must still place the
+    // server-card.json fetch first even though it resolves last.
+    const card = {
+      name: "late-mcp",
+      version: "1.0.0",
+      endpoint: "https://example.com/mcp",
+    };
+    const fetchImpl: typeof fetch = async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.endsWith("/server-card.json")) {
+        await new Promise((r) => setTimeout(r, 20));
+        return new Response(JSON.stringify(card), {
+          status: 200,
+          headers: JSON_HEADERS,
+        });
+      }
+      return new Response("", { status: 404 });
+    };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkMcpServerCard(ctx);
+    expect(result.status).toBe("pass");
+    for (let i = 0; i < DISPATCH_ORDER.length; i++) {
+      expect(result.evidence[i]!.label).toBe(DISPATCH_ORDER[i]);
+    }
+  });
 });

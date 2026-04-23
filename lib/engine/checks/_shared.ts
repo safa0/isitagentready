@@ -1,10 +1,12 @@
 /**
- * Internal helpers shared by the robots.txt-dependent checks that live in
- * this directory (robotsTxtAiRules, contentSignals). Not part of the public
- * engine API — intentionally prefixed with `_` to signal that.
+ * Cross-check shared helpers: JSON parsing, robots fetch-failure plumbing,
+ * AI bot token list.
  *
- * If more checks elsewhere in the codebase later need to depend on robots.txt
- * fetch-failure plumbing, promote this module up one level.
+ * Not part of the public engine API — intentionally prefixed with `_` to
+ * signal that. `tryParseJson` is consumed by the Phase-2 JSON-probing checks
+ * (api-catalog, oauth-discovery, oauth-protected-resource, mcp-server-card),
+ * while `buildFailNoRobots` and `AI_BOT_TOKENS` are consumed by the
+ * robots.txt-dependent checks (robotsTxtAiRules, contentSignals).
  */
 
 import {

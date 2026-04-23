@@ -380,7 +380,26 @@ export async function runCheckAgainstOracle<R>(
     }
   }
 
-  opts.extraRoutes?.(fixture.origin, routes);
+  // Defensive: surface the bug immediately if a spec's extraRoutes callback
+  // accidentally shadows a route already populated from the oracle evidence.
+  // We snapshot the pre-call handler references, run the callback, and throw
+  // if any oracle-owned key was deleted or reassigned.
+  if (opts.extraRoutes !== undefined) {
+    const snapshot = new Map<string, StubHandler>(Object.entries(routes));
+    opts.extraRoutes(fixture.origin, routes);
+    for (const [key, handler] of snapshot) {
+      if (!(key in routes)) {
+        throw new Error(
+          `runCheckAgainstOracle: extraRoutes deleted oracle route ${key}`,
+        );
+      }
+      if (routes[key] !== handler) {
+        throw new Error(
+          `runCheckAgainstOracle: extraRoutes shadowed oracle route ${key}`,
+        );
+      }
+    }
+  }
 
   const stub = makeFetchStub(routes);
   const ctx = createScanContext({

@@ -11,6 +11,9 @@
  *   - Request carries the Accept header verbatim.
  *   - Fail summary: "Server returned <code> -- API Catalog not found"
  *   - Conclude summary: "API Catalog not found".
+ *
+ * Real-world pass path is synthesis-only (no oracle fixture captures a
+ * passing api-catalog). Replace with captured fixture when available.
  */
 
 import { describe, expect, it } from "vitest";
