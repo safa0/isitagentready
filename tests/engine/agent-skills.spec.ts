@@ -165,6 +165,7 @@ describe("agentSkills — pass behaviour", () => {
     const ctx = createScanContext({ url: "https://legacy.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.details?.path).toBe("/.well-known/skills/index.json");
   });
 
@@ -197,6 +198,7 @@ describe("agentSkills — pass behaviour", () => {
     const ctx = createScanContext({ url: "https://cf-shape.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.details?.specVersion).toBe("0.1.0");
     expect(result.details?.path).toBe("/.well-known/skills/index.json");
   });
@@ -257,6 +259,7 @@ describe("agentSkills — pass behaviour", () => {
     const ctx = createScanContext({ url: "https://url-field.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 
   it("fails when index JSON is malformed", async () => {
@@ -341,6 +344,7 @@ describe("agentSkills — pass behaviour", () => {
     const ctx = createScanContext({ url: "https://cap.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     // s4, s5 must never be fetched.
     expect(calls.some((u) => u.includes("/s4/"))).toBe(false);
     expect(calls.some((u) => u.includes("/s5/"))).toBe(false);
@@ -385,6 +389,7 @@ describe("agentSkills — pass behaviour", () => {
     const ctx = createScanContext({ url: "https://mixed.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 
   it("fails when index body is valid JSON but root is not an object (scalar)", async () => {
@@ -441,6 +446,7 @@ describe("agentSkills — pass behaviour", () => {
     const result = await checkAgentSkills(ctx);
     // At least one resolved, so we expect pass (despite one unparseable href).
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 
   it("emits evidence steps in the expected order on a full pass", async () => {

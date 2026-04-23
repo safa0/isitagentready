@@ -205,6 +205,7 @@ describe("a2aAgentCard — edge cases", () => {
     const ctx = createScanContext({ url: "https://min.test", fetchImpl });
     const result = await checkA2aAgentCard(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.details?.skillCount).toBe(3);
   });
 });

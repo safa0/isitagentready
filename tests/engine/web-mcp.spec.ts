@@ -76,6 +76,7 @@ describe("webMcp — static fallback pass paths", () => {
     const ctx = createScanContext({ url: "https://provide.test", fetchImpl });
     const result = await checkWebMcp(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 
   it("passes when a same-origin linked script contains the API call", async () => {
@@ -99,6 +100,7 @@ describe("webMcp — static fallback pass paths", () => {
     const ctx = createScanContext({ url: "https://linked.test", fetchImpl });
     const result = await checkWebMcp(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 });
 
@@ -183,6 +185,32 @@ describe("webMcp — SSRF guard", () => {
     expect(skipStep).toBeDefined();
   });
 
+  it("skips protocol-relative script URLs with userinfo spoofing the origin host", async () => {
+    // Sanity check: the userinfo form really does resolve to evil.com — if this
+    // invariant ever breaks, the test below needs to be revisited.
+    expect(
+      new URL("//guard.test@evil.com/x.js", "https://guard.test/").origin,
+    ).toBe("https://evil.com");
+
+    const html = `<html><body>
+      <script src="//guard.test@evil.com/x.js"></script>
+    </body></html>`;
+    const { fetchImpl, calls } = makeFetchStub({
+      "https://guard.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+    });
+    const ctx = createScanContext({ url: "https://guard.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    expect(result.status).toBe("fail");
+    // The attacker host must never be contacted, nor the raw userinfo URL.
+    expect(calls.some((u) => u.includes("evil.com"))).toBe(false);
+    expect(calls.some((u) => u.includes("guard.test@"))).toBe(false);
+  });
+
   it("allows absolute same-origin script URLs", async () => {
     const html = `<html><body>
       <script src="https://same.test/bundle.js"></script>
@@ -204,6 +232,7 @@ describe("webMcp — SSRF guard", () => {
     const ctx = createScanContext({ url: "https://same.test", fetchImpl });
     const result = await checkWebMcp(ctx);
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 });
 
@@ -259,6 +288,29 @@ describe("webMcp — fail paths", () => {
     const ctx = createScanContext({ url: "https://scripts404.test", fetchImpl });
     const result = await checkWebMcp(ctx);
     expect(result.status).toBe("fail");
+  });
+
+  it("regex limitation: quoted '>' in script attribute still yields a match on the truncated body (known gap, locked for review)", async () => {
+    // INLINE_SCRIPT_REGEX uses `[^>]*` for the opening tag, so a quoted '>' in
+    // an attribute terminates the attribute list early — see the iter-2
+    // comment in lib/engine/checks/web-mcp.ts. For this exact input the
+    // truncated body ("b\">navigator.modelContext.registerTool({})") still
+    // contains the API signature, so the scan currently *passes*. Locked here
+    // so any future regex change that shifts this behaviour (in either
+    // direction) must be reviewed explicitly.
+    const html = `<script data-x="a>b">navigator.modelContext.registerTool({})</script>`;
+    const { fetchImpl } = makeFetchStub({
+      "https://regex-edge.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+    });
+    const ctx = createScanContext({ url: "https://regex-edge.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
   });
 
   it("does NOT falsely detect a superficial mention in prose", async () => {
@@ -381,6 +433,7 @@ describe("webMcp — robustness", () => {
     const result = await checkWebMcp(ctx);
     // The unparseable entry is recorded, and the good one still passes.
     expect(result.status).toBe("pass");
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     const parseErr = result.evidence.find((s) =>
       s.finding.summary.toLowerCase().includes("could not parse script url"),
     );
