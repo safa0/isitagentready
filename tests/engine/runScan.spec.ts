@@ -280,7 +280,7 @@ function buildOracleFetchStub(oracle: unknown): typeof fetch {
       // Only alias homepage-like URLs (no path). Otherwise /foo ≠ /foo/.
       try {
         const parsed = new URL(url);
-        if (parsed.pathname === "") {
+        if (parsed.pathname === "/" || parsed.pathname === "") {
           if (!fetches.has(withSlash)) fetches.set(withSlash, entry);
         }
       } catch {
