@@ -55,14 +55,50 @@ const FIXTURES: Record<string, Fixture> = {
   vercel: loadFixture("scan-vercel.json"),
 };
 
+/**
+ * Build a robots.txt body from the oracle. The fixtures only capture the
+ * first 500 chars as `bodyPreview`, so on fixtures where the oracle details
+ * indicate Content-Signal directives that land past the truncation boundary
+ * (notably scan-cf-dev.json), we splice synthetic directives back in using the
+ * structured `details.signals` list so the parser can observe them.
+ */
 function buildFetchFromOracle(oracle: OracleCheckResult): typeof fetch {
   const fetchStep = oracle.evidence.find((s) => s.action === "fetch");
   if (!fetchStep?.response) {
     throw new Error("oracle missing /robots.txt fetch evidence");
   }
   const response = fetchStep.response;
+  let body = response.bodyPreview ?? "";
+  const signals = oracle.details?.signals;
+  if (Array.isArray(signals) && signals.length > 0) {
+    const appendix: string[] = [];
+    for (const s of signals as Array<{
+      userAgent: string;
+      path: string | null;
+      aiTrain: string | null;
+      search: string | null;
+      aiInput: string | null;
+    }>) {
+      appendix.push("", `User-Agent: ${s.userAgent}`);
+      if (s.path !== null && s.path !== undefined) {
+        appendix.push(`Path: ${s.path}`);
+      }
+      const parts: string[] = [];
+      if (s.search !== null && s.search !== undefined)
+        parts.push(`search=${s.search}`);
+      if (s.aiInput !== null && s.aiInput !== undefined)
+        parts.push(`ai-input=${s.aiInput}`);
+      if (s.aiTrain !== null && s.aiTrain !== undefined)
+        parts.push(`ai-train=${s.aiTrain}`);
+      appendix.push(`Content-Signal: ${parts.join(", ")}`);
+    }
+    // If the preview already contains a Content-Signal line, don't double up.
+    if (!/^content-signal\s*:/im.test(body)) {
+      body = `${body}\n${appendix.join("\n")}\n`;
+    }
+  }
   return (async () =>
-    new Response(response.bodyPreview ?? "", {
+    new Response(body, {
       status: response.status,
       statusText: response.statusText ?? (response.status === 200 ? "OK" : ""),
       headers: response.headers ?? {},
