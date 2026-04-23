@@ -9,7 +9,6 @@ export default defineConfig({
   },
   test: {
     globals: false,
-    environment: "node",
     // Tests assume XFF headers are trustworthy (tests run off-platform).
     // The rate limiter's runtime trust check reads these env vars — without
     // the opt-in, XFF would be ignored and tests that set `x-forwarded-for`
@@ -17,18 +16,49 @@ export default defineConfig({
     env: {
       TRUST_FORWARDED: "true",
     },
-    include: ["tests/**/*.spec.ts"],
-    exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
+    // Split into projects so Node-side tests run under `node` and React
+    // component tests run under `jsdom`. Keeps the existing 431 Node tests
+    // unaffected while letting the new components/ tests use DOM APIs.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "node",
+          environment: "node",
+          include: ["tests/**/*.spec.ts"],
+          exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "components",
+          environment: "jsdom",
+          include: ["tests/components/**/*.spec.tsx"],
+          exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
+          setupFiles: ["./tests/components/setup.ts"],
+        },
+      },
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "html"],
-      include: ["lib/**/*.ts", "app/**/route.ts"],
+      include: [
+        "lib/**/*.ts",
+        "app/**/route.ts",
+        "components/ScoreGauge.tsx",
+        "components/CategoryCard.tsx",
+        "components/CheckRow.tsx",
+        "components/EvidenceTimeline.tsx",
+        "components/CopyPromptButton.tsx",
+      ],
       exclude: [
         "lib/skills/**",
         "lib/utils.ts",
         "lib/engine/index.ts",
         "**/*.d.ts",
         "**/*.spec.ts",
+        "**/*.spec.tsx",
       ],
       thresholds: {
         perFile: true,
