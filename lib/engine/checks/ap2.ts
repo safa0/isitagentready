@@ -45,18 +45,18 @@ const PASS_SUMMARY =
 /**
  * AP2-compatible skill tokens. Any A2A Agent Card skill id (or key) that
  * contains one of these substrings (case-insensitive) counts as AP2
- * advertisement. The list errs on the side of inclusion: AP2 draft doesn't
- * mandate an exact id yet, so we accept obvious payment-commerce tokens plus
- * the literal "ap2" prefix. This mirrors the "derived from A2A Agent Card
- * presence" rule in FINDINGS §3.
+ * advertisement. We intentionally keep this list tight — AP2 draft doesn't
+ * mandate an exact id yet, but broader tokens like "commerce" or "purchase"
+ * over-match skills such as "commerce-reports" or unrelated commerce tooling.
+ * The literal "ap2" prefix plus "payment(s)" and "checkout" are specific
+ * enough to minimise false positives while still catching the obvious
+ * advertisements FINDINGS §3 describes.
  */
 const AP2_SKILL_TOKENS = [
   "ap2",
   "payment",
   "payments",
   "checkout",
-  "commerce",
-  "purchase",
 ] as const;
 
 interface Options {

@@ -43,6 +43,27 @@ interface Options {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Verify that a 402 response body looks like x402 payment requirements.
+ * A stray 402 (e.g. a Stripe-style error envelope) must not count. The
+ * x402 protocol mandates either `x402Version` at the root or an
+ * `accepts[]` array of payment requirements — checking for either is
+ * sufficient to distinguish genuine x402 from coincidental 402 usage.
+ */
+function isX402Body(body: string | undefined): boolean {
+  if (body === undefined || body.length === 0) return false;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed === null || typeof parsed !== "object") return false;
+    const obj = parsed as Record<string, unknown>;
+    if (obj["x402Version"] !== undefined) return true;
+    if (Array.isArray(obj["accepts"])) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function probeFinding(
   label: string,
   outcome: FetchOutcome,
@@ -55,9 +76,15 @@ function probeFinding(
   }
   const status = outcome.response.status;
   if (status === 402) {
+    if (isX402Body(outcome.body)) {
+      return {
+        outcome: "positive",
+        summary: `${label} returned 402 (x402 payment required)`,
+      };
+    }
     return {
-      outcome: "positive",
-      summary: `${label} returned 402 (x402 payment required)`,
+      outcome: "neutral",
+      summary: `${label} returned 402 but body is not an x402 payment requirements document`,
     };
   }
   return {
@@ -66,15 +93,30 @@ function probeFinding(
   };
 }
 
-function originHost(ctx: ScanContext): string {
-  return ctx.url.host;
-}
-
 interface BazaarEntry {
   readonly origin?: unknown;
   readonly host?: unknown;
   readonly url?: unknown;
   readonly resource?: unknown;
+}
+
+/**
+ * Compare a bazaar candidate string to the expected host using exact hostname
+ * equality (case-insensitive). We previously used substring matching, which is
+ * vulnerable to host-confusion: a scan of `a.com` would match a bazaar entry
+ * for `a.com.evil.test`. Parsing as a URL and comparing `hostname` exactly
+ * closes that attack surface. If the candidate is a bare host (no scheme),
+ * we fall back to direct string comparison.
+ */
+function hostMatches(candidate: string, expected: string): boolean {
+  try {
+    const u = new URL(
+      candidate.includes("://") ? candidate : `https://${candidate}`,
+    );
+    return u.hostname.toLowerCase() === expected.toLowerCase();
+  } catch {
+    return candidate.toLowerCase() === expected.toLowerCase();
+  }
 }
 
 function bazaarMatchesHost(body: string, host: string): boolean {
@@ -91,11 +133,10 @@ function bazaarMatchesHost(body: string, host: string): boolean {
         : Array.isArray(parsed)
           ? (parsed as BazaarEntry[])
           : [];
-    const lcHost = host.toLowerCase();
     for (const entry of entries) {
       const candidates = [entry.origin, entry.host, entry.url, entry.resource];
       for (const c of candidates) {
-        if (typeof c === "string" && c.toLowerCase().includes(lcHost)) {
+        if (typeof c === "string" && hostMatches(c, host)) {
           return true;
         }
       }
@@ -149,7 +190,7 @@ export async function checkX402(
   evidence.push(fetchToStep(homeOutcome, "GET /", homeFinding));
 
   // 2) Bazaar
-  const host = originHost(ctx);
+  const host = ctx.url.host;
   let bazaarSummary: string;
   let bazaarOutcomeVerdict: "positive" | "neutral" | "negative" = "neutral";
   if (bazaarOutcome.response === undefined) {

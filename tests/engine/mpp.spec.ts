@@ -13,7 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { makeFetchStub } from "./_helpers/oracle";
+import { ALL_SITES, loadOracle, makeFetchStub } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
 import { checkMpp } from "@/lib/engine/checks/mpp";
@@ -165,6 +165,27 @@ describe("mpp — additional coverage", () => {
     const result = await checkMpp(ctx, { isCommerce: true });
     expect(result.status).toBe("fail");
   });
+});
+
+describe("mpp — oracle round-trip (M1)", () => {
+  it.each(ALL_SITES)(
+    "matches the oracle status + message for %s",
+    async (site) => {
+      const fixture = loadOracle(site);
+      const oracle = fixture.raw.checks.commerce.mpp;
+      const isCommerce = Boolean(fixture.raw.isCommerce);
+      const { fetchImpl } = makeFetchStub({
+        [`${fixture.origin}/openapi.json`]: {
+          status: 404,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        },
+      });
+      const ctx = createScanContext({ url: fixture.origin, fetchImpl });
+      const result = await checkMpp(ctx, { isCommerce });
+      expect(result.status).toBe(oracle.status);
+      expect(result.message).toBe(oracle.message);
+    },
+  );
 });
 
 describe("mpp — non-commerce gating", () => {

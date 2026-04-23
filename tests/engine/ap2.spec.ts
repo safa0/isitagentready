@@ -22,6 +22,7 @@ import { describe, it, expect } from "vitest";
 
 import { CheckResultSchema, type CheckResult } from "@/lib/schema";
 import { checkAp2 } from "@/lib/engine/checks/ap2";
+import { ALL_SITES, loadOracle } from "./_helpers/oracle";
 
 // ---------------------------------------------------------------------------
 // A2A card fixtures — mimic the CheckResult the a2a-agent-card check would
@@ -79,8 +80,10 @@ describe("ap2 — shopify oracle (isCommerce=true)", () => {
     expect(result.status).toBe("fail");
     expect(result.message).toBe("AP2 not detected (no A2A Agent Card)");
     expect(result.evidence).toHaveLength(1);
-    expect(result.evidence[0]!.action).toBe("conclude");
-    expect(result.evidence[0]!.finding).toEqual({
+    const step = result.evidence[0];
+    expect(step).toBeDefined();
+    expect(step?.action).toBe("conclude");
+    expect(step?.finding).toEqual({
       outcome: "negative",
       summary: "No A2A Agent Card found -- AP2 requires an A2A Agent Card",
     });
@@ -114,6 +117,21 @@ describe("ap2 — shopify oracle (isCommerce=true)", () => {
 // Non-commerce gating
 // ---------------------------------------------------------------------------
 
+describe("ap2 — oracle round-trip (M1)", () => {
+  it.each(ALL_SITES)(
+    "matches the oracle status + message for %s",
+    async (site) => {
+      const fixture = loadOracle(site);
+      const oracle = fixture.raw.checks.commerce.ap2;
+      const isCommerce = Boolean(fixture.raw.isCommerce);
+      // All 5 oracles record a missing A2A card, so we pass `null`.
+      const result = await checkAp2({ isCommerce, a2aAgentCard: null });
+      expect(result.status).toBe(oracle.status);
+      expect(result.message).toBe(oracle.message);
+    },
+  );
+});
+
 describe("ap2 — non-commerce gating", () => {
   it("returns neutral with suffix when the site is not commerce", async () => {
     const result = await checkAp2({ isCommerce: false, a2aAgentCard: null });
@@ -122,7 +140,9 @@ describe("ap2 — non-commerce gating", () => {
       "AP2 not detected (no A2A Agent Card) (not a commerce site)",
     );
     // Inner conclusion summary stays the same.
-    expect(result.evidence[0]!.finding.summary).toBe(
+    const step = result.evidence[0];
+    expect(step).toBeDefined();
+    expect(step?.finding.summary).toBe(
       "No A2A Agent Card found -- AP2 requires an A2A Agent Card",
     );
   });

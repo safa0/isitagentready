@@ -21,7 +21,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { makeFetchStub } from "./_helpers/oracle";
+import { ALL_SITES, loadOracle, makeFetchStub } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
 import { checkX402 } from "@/lib/engine/checks/x402";
@@ -168,8 +168,9 @@ describe("x402 — additional coverage", () => {
     const ctx = createScanContext({ url: origin, fetchImpl });
     const result = await checkX402(ctx, { isCommerce: true });
     expect(result.status).toBe("fail");
-    const bazaarStep = result.evidence[1]!;
-    expect(bazaarStep.finding.summary).toMatch(/Bazaar API request failed/);
+    const bazaarStep = result.evidence[1];
+    expect(bazaarStep).toBeDefined();
+    expect(bazaarStep?.finding.summary).toMatch(/Bazaar API request failed/);
   });
 
   it("records a non-200 bazaar summary when the bazaar returns 500", async () => {
@@ -183,8 +184,9 @@ describe("x402 — additional coverage", () => {
     const ctx = createScanContext({ url: origin, fetchImpl });
     const result = await checkX402(ctx, { isCommerce: true });
     expect(result.status).toBe("fail");
-    const bazaarStep = result.evidence[1]!;
-    expect(bazaarStep.finding.summary).toBe("Bazaar API returned 500");
+    const bazaarStep = result.evidence[1];
+    expect(bazaarStep).toBeDefined();
+    expect(bazaarStep?.finding.summary).toBe("Bazaar API returned 500");
   });
 
   it("tolerates a bazaar body that is not valid JSON", async () => {
@@ -240,6 +242,100 @@ describe("x402 — additional coverage", () => {
     expect(result.status).toBe("pass");
   });
 
+  it("does NOT match a bazaar entry whose host is a suffix-confusion of the scan host (H1)", async () => {
+    // Scanning `a.com`; bazaar entry points to `a.com.evil.test`. Under the
+    // old `.includes()` comparison this would match — the fix requires exact
+    // hostname equality.
+    const origin = "https://a.com";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          data: [
+            { origin: "https://a.com.evil.test/", resource: "/api" },
+            { host: "a.com.evil.test" },
+            { url: "https://evil.test/path?target=a.com" },
+          ],
+        }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
+
+  it("matches an exact-hostname bare-host bazaar entry (H1 positive case)", async () => {
+    const origin = "https://exact.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: [{ host: "exact.test" }] }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("does NOT pass on a 402 with an arbitrary (non-x402) body (L5)", async () => {
+    // A Stripe-style error envelope returned with HTTP 402 must not count as
+    // an x402 payment requirements document.
+    const origin = "https://stripe402.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          error: { type: "card_error", message: "Your card was declined." },
+        }),
+      },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+    const apiStep = result.evidence[2];
+    expect(apiStep).toBeDefined();
+    expect(apiStep?.finding.summary).toMatch(
+      /402 but body is not an x402 payment requirements document/,
+    );
+  });
+
+  it("passes when the 402 body has only an accepts[] array (L5 accepts-only)", async () => {
+    const origin = "https://accepts.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accepts: [{ scheme: "exact", network: "base" }] }),
+      },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
   it("records a transport-error finding when a homepage probe errors", async () => {
     const origin = "https://home-err.test";
     const { fetchImpl } = makeFetchStub({
@@ -255,8 +351,39 @@ describe("x402 — additional coverage", () => {
     const ctx = createScanContext({ url: origin, fetchImpl });
     const result = await checkX402(ctx, { isCommerce: true });
     expect(result.status).toBe("fail");
-    expect(result.evidence[0]!.finding.summary).toMatch(/request failed/);
+    const homeStep = result.evidence[0];
+    expect(homeStep).toBeDefined();
+    expect(homeStep?.finding.summary).toMatch(/request failed/);
   });
+});
+
+describe("x402 — oracle round-trip (M1)", () => {
+  it.each(ALL_SITES)(
+    "matches the oracle status + message for %s",
+    async (site) => {
+      const fixture = loadOracle(site);
+      const oracle = fixture.raw.checks.commerce.x402;
+      const isCommerce = Boolean(fixture.raw.isCommerce);
+      const { fetchImpl } = makeFetchStub({
+        [`${fixture.origin}/`]: {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+          body: "",
+        },
+        [BAZAAR_URL]: {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: nonMatchingBazaar(),
+        },
+        [`${fixture.origin}/api`]: { status: 404 },
+        [`${fixture.origin}/api/v1`]: { status: 404 },
+      });
+      const ctx = createScanContext({ url: fixture.origin, fetchImpl });
+      const result = await checkX402(ctx, { isCommerce });
+      expect(result.status).toBe(oracle.status);
+      expect(result.message).toBe(oracle.message);
+    },
+  );
 });
 
 describe("x402 — non-commerce gating", () => {
@@ -290,7 +417,10 @@ describe("x402 — non-commerce gating", () => {
     );
     // Evidence length stays the same; inner conclude summary is unchanged.
     expect(result.evidence).toHaveLength(5);
-    const conclude = result.evidence[result.evidence.length - 1]!;
-    expect(conclude.finding.summary).toBe("x402 payment protocol not detected");
+    const conclude = result.evidence[result.evidence.length - 1];
+    expect(conclude).toBeDefined();
+    expect(conclude?.finding.summary).toBe(
+      "x402 payment protocol not detected",
+    );
   });
 });

@@ -62,10 +62,15 @@ export function applyCommerceGate(
   isCommerce: boolean,
 ): CheckResult {
   if (isCommerce) return result;
+  // Strip a single trailing period before appending the suffix so future
+  // messages ending in "." don't produce "foo. (not a commerce site)".
+  const base = result.message.endsWith(".")
+    ? result.message.slice(0, -1)
+    : result.message;
   return {
     ...result,
     status: "neutral",
-    message: result.message + NOT_COMMERCE_SUFFIX,
+    message: base + NOT_COMMERCE_SUFFIX,
   };
 }
 
@@ -83,41 +88,32 @@ interface PlatformRule {
   readonly headerValues: readonly string[];
 }
 
+// Body tokens are kept narrow — each token points at a platform-specific CDN,
+// plugin path, or internal script name. Descriptive copy like
+// `<meta name="description" content="shopify your store">` must NOT trigger a
+// platform match (see PLATFORM_META_REGEXES for the meta-tag route).
 const PLATFORM_RULES: readonly PlatformRule[] = [
   {
     id: "shopify",
-    bodyTokens: [
-      'content="shopify',
-      "cdn.shopify.com",
-      "shopifycloud",
-      "myshopify.com",
-    ],
+    bodyTokens: ["cdn.shopify.com", "shopifycloud", "myshopify.com"],
     headerNames: ["x-shopify-stage", "x-shopid", "x-shardid"],
     headerValues: [],
   },
   {
     id: "woocommerce",
-    bodyTokens: [
-      'content="woocommerce',
-      "/wp-content/plugins/woocommerce",
-      "wc-ajax",
-    ],
+    bodyTokens: ["/wp-content/plugins/woocommerce", "wc-ajax"],
     headerNames: ["x-wc-store-api-nonce"],
     headerValues: ["woocommerce"],
   },
   {
     id: "magento",
-    bodyTokens: [
-      'content="magento',
-      "/static/frontend/magento",
-      "mage-cache-storage",
-    ],
+    bodyTokens: ["/static/frontend/magento", "mage-cache-storage"],
     headerNames: ["x-magento-cache-debug", "x-magento-tags"],
     headerValues: [],
   },
   {
     id: "bigcommerce",
-    bodyTokens: ["cdn11.bigcommerce.com", 'content="bigcommerce'],
+    bodyTokens: ["cdn11.bigcommerce.com"],
     headerNames: ["x-bc-apigw-request-id"],
     headerValues: ["bigcommerce"],
   },
@@ -133,25 +129,36 @@ const META_REGEXES: ReadonlyArray<{ signal: string; re: RegExp }> = [
   },
 ];
 
+/**
+ * Platform meta regexes. We deliberately scope matches to two narrow shapes
+ * so unrelated descriptive copy doesn't trigger a false positive:
+ *   1. `<meta name="generator" content="...shopify...">` (the conventional
+ *      CMS/platform self-identification meta), or
+ *   2. `<meta name="shopify...">` / `<meta name="woocommerce...">` etc. —
+ *      a platform-named meta tag.
+ * A previous implementation matched any meta attribute value containing the
+ * vendor token, which over-matched pages like
+ * `<meta name="description" content="How to shopify your store">`.
+ */
 const PLATFORM_META_REGEXES: ReadonlyArray<{
   id: PlatformRule["id"];
   re: RegExp;
 }> = [
   {
     id: "shopify",
-    re: /<meta\s+[^>]*(?:name|content)\s*=\s*["'][^"']*shopify[^"']*["'][^>]*>/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*shopify[^"']*["']|<meta\s+[^>]*name\s*=\s*["']shopify[^"']*["']/i,
   },
   {
     id: "woocommerce",
-    re: /<meta\s+[^>]*(?:name|content)\s*=\s*["'][^"']*woocommerce[^"']*["'][^>]*>/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*woocommerce[^"']*["']|<meta\s+[^>]*name\s*=\s*["']woocommerce[^"']*["']/i,
   },
   {
     id: "magento",
-    re: /<meta\s+[^>]*(?:name|content)\s*=\s*["'][^"']*magento[^"']*["'][^>]*>/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*magento[^"']*["']|<meta\s+[^>]*name\s*=\s*["']magento[^"']*["']/i,
   },
   {
     id: "bigcommerce",
-    re: /<meta\s+[^>]*(?:name|content)\s*=\s*["'][^"']*bigcommerce[^"']*["'][^>]*>/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*bigcommerce[^"']*["']|<meta\s+[^>]*name\s*=\s*["']bigcommerce[^"']*["']/i,
   },
 ];
 
@@ -169,42 +176,52 @@ const URL_PROBES = [
 function detectPlatforms(
   body: string,
   headers: Record<string, string>,
-): Set<string> {
-  const found = new Set<string>();
+): string[] {
+  const found: string[] = [];
   const lower = body.toLowerCase();
   for (const rule of PLATFORM_RULES) {
     if (rule.bodyTokens.some((tok) => lower.includes(tok.toLowerCase()))) {
-      found.add(`platform:${rule.id}`);
+      found.push(`platform:${rule.id}`);
       continue;
     }
     if (rule.headerNames.some((h) => headers[h.toLowerCase()] !== undefined)) {
-      found.add(`platform:${rule.id}`);
+      found.push(`platform:${rule.id}`);
       continue;
     }
     if (rule.headerValues.length > 0) {
       const joined = Object.values(headers).join(" ").toLowerCase();
       if (rule.headerValues.some((v) => joined.includes(v.toLowerCase()))) {
-        found.add(`platform:${rule.id}`);
+        found.push(`platform:${rule.id}`);
       }
     }
   }
   return found;
 }
 
-function detectMeta(body: string): Set<string> {
-  const found = new Set<string>();
-  for (const { signal, re } of META_REGEXES) {
-    if (re.test(body)) found.add(signal);
-  }
+function detectMeta(body: string): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
   for (const { id, re } of PLATFORM_META_REGEXES) {
-    if (re.test(body)) found.add(`meta:${id}`);
+    const signal = `meta:${id}`;
+    if (!seen.has(signal) && re.test(body)) {
+      seen.add(signal);
+      found.push(signal);
+    }
+  }
+  for (const { signal, re } of META_REGEXES) {
+    if (!seen.has(signal) && re.test(body)) {
+      seen.add(signal);
+      found.push(signal);
+    }
   }
   return found;
 }
 
-async function detectUrlSignals(ctx: ScanContext): Promise<Set<string>> {
-  // Use GET (not HEAD) because some origins reject HEAD; pass a short
-  // timeout to avoid blocking the scan if a 404 path hangs.
+async function detectUrlSignals(ctx: ScanContext): Promise<string[]> {
+  // Use HEAD to minimise response size; most origins honour HEAD on /checkout,
+  // /product, /shop, /cart. Order is preserved by returning probes in
+  // `URL_PROBES` declaration order — the final signal list deliberately keeps
+  // platform:* → meta:* → url:* detection order (see `detectCommerce`).
   const probes = URL_PROBES.map(async (path) => {
     try {
       const outcome = await ctx.fetch(path, { method: "HEAD" });
@@ -217,7 +234,7 @@ async function detectUrlSignals(ctx: ScanContext): Promise<Set<string>> {
     return undefined;
   });
   const resolved = await Promise.all(probes);
-  return new Set(resolved.filter((s): s is string => s !== undefined));
+  return resolved.filter((s): s is string => s !== undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -232,22 +249,35 @@ export async function detectCommerce(
     detectUrlSignals(ctx),
   ]);
 
-  const signals = new Set<string>();
+  // Preserve detection order: `platform:* → meta:* → url:*`. The shopify
+  // oracle (`research/raw/scan-shopify.json` commerceSignals) emits signals
+  // in this order, and downstream consumers may rely on it (scoring, UI
+  // grouping). Within each bucket, order is preserved per the detector's
+  // declaration order (PLATFORM_RULES / META_REGEXES / URL_PROBES).
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const push = (s: string): void => {
+    if (!seen.has(s)) {
+      seen.add(s);
+      ordered.push(s);
+    }
+  };
 
   if (homepage.response !== undefined) {
     const body = homepage.body ?? "";
     const headers = homepage.response.headers;
-    for (const s of detectPlatforms(body, headers)) signals.add(s);
-    for (const s of detectMeta(body)) signals.add(s);
+    for (const s of detectPlatforms(body, headers)) push(s);
+    for (const s of detectMeta(body)) push(s);
   }
+  for (const s of urlSignals) push(s);
 
-  for (const s of urlSignals) signals.add(s);
-
-  // Sorted for stable output — consumers can rely on order without
-  // callers having to sort themselves.
-  const commerceSignals = [...signals].sort();
   return {
-    isCommerce: commerceSignals.length > 0,
-    commerceSignals,
+    isCommerce: ordered.length > 0,
+    commerceSignals: ordered,
   };
 }
+
+// TODO(phase-3): When the orchestrator wires checks together it will normalise
+// the signature shape for commerce checks by widening `ScanContext` to include
+// `isCommerce` / `commerceSignals` directly (M4-norm from iter-1 review), so
+// individual checks no longer need a bespoke `opts.isCommerce` parameter.

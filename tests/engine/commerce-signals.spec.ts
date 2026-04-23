@@ -21,7 +21,8 @@ import { describe, it, expect } from "vitest";
 
 import { makeFetchStub } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
-import { detectCommerce } from "@/lib/engine/commerce-signals";
+import { applyCommerceGate, detectCommerce } from "@/lib/engine/commerce-signals";
+import type { CheckResult } from "@/lib/schema";
 
 // ---------------------------------------------------------------------------
 // Synthetic fixtures (oracle only records the final signal set, not homepage
@@ -114,10 +115,31 @@ describe("detectCommerce — non-commerce fixtures", () => {
 // ---------------------------------------------------------------------------
 
 describe("detectCommerce — platform heuristics", () => {
-  it("flags a WooCommerce generator meta", async () => {
+  it("flags a WooCommerce generator meta as meta:woocommerce", async () => {
     const origin = "https://woo.test";
     const html =
       '<html><head><meta name="generator" content="WooCommerce 7.1.0"></head></html>';
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: {
+        status: 200,
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+      [`${origin}/checkout`]: { status: 404 },
+      [`${origin}/product`]: { status: 404 },
+      [`${origin}/shop`]: { status: 404 },
+      [`${origin}/cart`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await detectCommerce(ctx);
+    expect(result.isCommerce).toBe(true);
+    expect(result.commerceSignals).toContain("meta:woocommerce");
+  });
+
+  it("flags a WooCommerce plugin path as platform:woocommerce", async () => {
+    const origin = "https://woo2.test";
+    const html =
+      '<html><head><link rel="stylesheet" href="/wp-content/plugins/woocommerce/assets/css/woocommerce.css"></head></html>';
     const { fetchImpl } = makeFetchStub({
       [`${origin}/`]: {
         status: 200,
@@ -261,6 +283,64 @@ describe("detectCommerce — platform heuristics", () => {
     expect(result.commerceSignals).toEqual([]);
   });
 
+  it("does NOT treat descriptive meta copy as a platform signal (H2 regression)", async () => {
+    const origin = "https://desc.test";
+    // A marketing-style description meta that mentions "shopify" in prose
+    // must not be counted as a Shopify platform signal.
+    const html =
+      '<!doctype html><html><head>' +
+      '<meta name="description" content="How to shopify your store">' +
+      '</head><body>hi</body></html>';
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: {
+        status: 200,
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+      [`${origin}/checkout`]: { status: 404 },
+      [`${origin}/product`]: { status: 404 },
+      [`${origin}/shop`]: { status: 404 },
+      [`${origin}/cart`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await detectCommerce(ctx);
+    expect(result.isCommerce).toBe(false);
+    expect(result.commerceSignals).toEqual([]);
+  });
+
+  it("emits signals in platform -> meta -> url detection order (M2)", async () => {
+    // Mirrors the shopify oracle's `commerceSignals` array ordering:
+    // ["platform:shopify", "meta:shopify", "url:/checkout",
+    //  "url:/product", "url:/shop"].
+    const origin = "https://www.shopify.com";
+    const html = [
+      "<!doctype html><html><head>",
+      '<meta name="generator" content="Shopify">',
+      '<script src="https://cdn.shopify.com/app.js"></script>',
+      "</head><body>shop</body></html>",
+    ].join("\n");
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: {
+        status: 200,
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+      [`${origin}/checkout`]: { status: 200 },
+      [`${origin}/product`]: { status: 200 },
+      [`${origin}/shop`]: { status: 200 },
+      [`${origin}/cart`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await detectCommerce(ctx);
+    expect(result.commerceSignals).toEqual([
+      "platform:shopify",
+      "meta:shopify",
+      "url:/checkout",
+      "url:/product",
+      "url:/shop",
+    ]);
+  });
+
   it("tolerates individual HEAD probe failures", async () => {
     const origin = "https://parthead.test";
     const { fetchImpl } = makeFetchStub({
@@ -278,5 +358,44 @@ describe("detectCommerce — platform heuristics", () => {
     const result = await detectCommerce(ctx);
     expect(result.isCommerce).toBe(true);
     expect(result.commerceSignals).toEqual(["url:/product"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyCommerceGate — message suffix / trailing-period handling (L2)
+// ---------------------------------------------------------------------------
+
+describe("applyCommerceGate", () => {
+  it("passes the result through unchanged when isCommerce is true", () => {
+    const input: CheckResult = {
+      status: "fail",
+      message: "X not detected",
+      evidence: [],
+      durationMs: 0,
+    };
+    expect(applyCommerceGate(input, true)).toBe(input);
+  });
+
+  it("strips a trailing period before appending the non-commerce suffix", () => {
+    const input: CheckResult = {
+      status: "fail",
+      message: "X not detected.",
+      evidence: [],
+      durationMs: 0,
+    };
+    const out = applyCommerceGate(input, false);
+    expect(out.status).toBe("neutral");
+    expect(out.message).toBe("X not detected (not a commerce site)");
+  });
+
+  it("appends the suffix to a message without a trailing period", () => {
+    const input: CheckResult = {
+      status: "fail",
+      message: "X not detected",
+      evidence: [],
+      durationMs: 0,
+    };
+    const out = applyCommerceGate(input, false);
+    expect(out.message).toBe("X not detected (not a commerce site)");
   });
 });

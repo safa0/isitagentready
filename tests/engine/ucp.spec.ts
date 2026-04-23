@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { makeFetchStub } from "./_helpers/oracle";
+import { ALL_SITES, loadOracle, makeFetchStub } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
 import { checkUcp } from "@/lib/engine/checks/ucp";
@@ -82,6 +82,27 @@ describe("ucp — shopify oracle (isCommerce=true)", () => {
     const result = await checkUcp(ctx, { isCommerce: true });
     expect(result.status).toBe("fail");
   });
+});
+
+describe("ucp — oracle round-trip (M1)", () => {
+  it.each(ALL_SITES)(
+    "matches the oracle status + message for %s",
+    async (site) => {
+      const fixture = loadOracle(site);
+      const oracle = fixture.raw.checks.commerce.ucp;
+      const isCommerce = Boolean(fixture.raw.isCommerce);
+      const { fetchImpl } = makeFetchStub({
+        [`${fixture.origin}/.well-known/ucp`]: {
+          status: 404,
+          headers: { "content-type": "text/plain;charset=UTF-8" },
+        },
+      });
+      const ctx = createScanContext({ url: fixture.origin, fetchImpl });
+      const result = await checkUcp(ctx, { isCommerce });
+      expect(result.status).toBe(oracle.status);
+      expect(result.message).toBe(oracle.message);
+    },
+  );
 });
 
 describe("ucp — non-commerce gating", () => {
