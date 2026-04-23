@@ -37,7 +37,7 @@ function getOracle(site: OracleSite) {
 }
 
 async function runAgainstOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
+  const loaded = loadOracle(site);
   const check = getOracle(site);
 
   const routes: Record<string, StubHandler> = {};
@@ -53,24 +53,23 @@ async function runAgainstOracle(site: OracleSite) {
   // The homepage URL in the oracle is recorded without trailing slash
   // (e.g. "https://example.com") but ctx.fetch("/") produces
   // "https://example.com/". Register both forms to keep the stub happy.
-  const origin = new URL(oracle.url).origin;
-  if (routes[origin] !== undefined) {
-    routes[`${origin}/`] = routes[origin];
+  if (routes[loaded.origin] !== undefined) {
+    routes[`${loaded.origin}/`] = routes[loaded.origin];
   }
 
   const stub = makeFetchStub(routes);
   const ctx = createScanContext({
-    url: oracle.url,
+    url: loaded.url,
     fetchImpl: stub.fetchImpl,
   });
   const result = await checkOauthProtectedResource(ctx);
-  return { result, oracle: check, calls: stub.calls };
+  return { result, oracle: check, origin: loaded.origin, calls: stub.calls };
 }
 
 describe("checkOauthProtectedResource — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle, calls } = await runAgainstOracle(site);
+      const { result, oracle, origin, calls } = await runAgainstOracle(site);
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
 
@@ -78,8 +77,6 @@ describe("checkOauthProtectedResource — oracle fixtures", () => {
       expect(result.message).toBe(oracle.message);
       expect(result.evidence).toHaveLength(oracle.evidence.length);
 
-      // Both paths probed.
-      const origin = new URL(oracle.url).origin;
       // Homepage call may come in as either origin or origin/ — tolerate both.
       const sawHomepage = calls.some(
         (c) => c === origin || c === `${origin}/`,
@@ -162,6 +159,47 @@ describe("checkOauthProtectedResource — edge cases", () => {
     const fetchImpl: typeof fetch = async () => {
       throw new Error("ECONNRESET");
     };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkOauthProtectedResource(ctx);
+    expect(result.status).toBe("fail");
+  });
+
+  it("records a positive homepage finding when WWW-Authenticate is present", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/": {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: {
+          "www-authenticate": 'Bearer resource="https://example.com"',
+        },
+      },
+      "https://example.com/.well-known/oauth-protected-resource": {
+        status: 404,
+        headers: {},
+      },
+    });
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkOauthProtectedResource(ctx);
+    // Still fails (well-known 404); but homepage step must be positive.
+    expect(result.status).toBe("fail");
+    const homepageStep = result.evidence.find(
+      (s) => s.action === "fetch" && s.label === "GET /",
+    );
+    expect(homepageStep?.finding.outcome).toBe("positive");
+  });
+
+  it("fails when well-known returns 200 but not JSON", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/": {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      },
+      "https://example.com/.well-known/oauth-protected-resource": {
+        status: 200,
+        headers: { "content-type": "text/html" },
+        body: "<html></html>",
+      },
+    });
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkOauthProtectedResource(ctx);
     expect(result.status).toBe("fail");

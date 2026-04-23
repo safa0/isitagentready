@@ -38,7 +38,7 @@ function getOracle(site: OracleSite) {
 }
 
 async function runAgainstOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
+  const loaded = loadOracle(site);
   const check = getOracle(site);
 
   const routes: Record<string, StubHandler> = {};
@@ -54,17 +54,17 @@ async function runAgainstOracle(site: OracleSite) {
 
   const stub = makeFetchStub(routes);
   const ctx = createScanContext({
-    url: oracle.url,
+    url: loaded.url,
     fetchImpl: stub.fetchImpl,
   });
   const result = await checkApiCatalog(ctx);
-  return { result, oracle: check, calls: stub.calls };
+  return { result, oracle: check, origin: loaded.origin, calls: stub.calls };
 }
 
 describe("checkApiCatalog — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle, calls } = await runAgainstOracle(site);
+      const { result, oracle, origin, calls } = await runAgainstOracle(site);
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
 
@@ -72,7 +72,6 @@ describe("checkApiCatalog — oracle fixtures", () => {
       expect(result.message).toBe(oracle.message);
       expect(result.evidence).toHaveLength(oracle.evidence.length);
 
-      const origin = new URL(oracle.url).origin;
       expect(calls).toEqual(
         expect.arrayContaining([`${origin}/.well-known/api-catalog`]),
       );
@@ -146,6 +145,32 @@ describe("checkApiCatalog — edge cases", () => {
     const fetchImpl: typeof fetch = async () => {
       throw new Error("ETIMEDOUT");
     };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkApiCatalog(ctx);
+    expect(result.status).toBe("fail");
+  });
+
+  it("fails when 200 is returned with invalid JSON body", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/.well-known/api-catalog": {
+        status: 200,
+        headers: { "content-type": "application/linkset+json" },
+        body: "<not json>",
+      },
+    });
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkApiCatalog(ctx);
+    expect(result.status).toBe("fail");
+  });
+
+  it("fails when 200 JSON body is returned with wrong content-type", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/.well-known/api-catalog": {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ linkset: [{ anchor: "x" }] }),
+      },
+    });
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkApiCatalog(ctx);
     expect(result.status).toBe("fail");

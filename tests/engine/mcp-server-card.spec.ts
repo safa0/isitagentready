@@ -45,7 +45,7 @@ const CANDIDATE_PATHS = [
 ] as const;
 
 async function runAgainstOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
+  const loaded = loadOracle(site);
   const check = getOracle(site);
 
   const routes: Record<string, StubHandler> = {};
@@ -61,17 +61,17 @@ async function runAgainstOracle(site: OracleSite) {
 
   const stub = makeFetchStub(routes);
   const ctx = createScanContext({
-    url: oracle.url,
+    url: loaded.url,
     fetchImpl: stub.fetchImpl,
   });
   const result = await checkMcpServerCard(ctx);
-  return { result, oracle: check, calls: stub.calls };
+  return { result, oracle: check, origin: loaded.origin, calls: stub.calls };
 }
 
 describe("checkMcpServerCard — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle, calls } = await runAgainstOracle(site);
+      const { result, oracle, origin, calls } = await runAgainstOracle(site);
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
 
@@ -80,7 +80,6 @@ describe("checkMcpServerCard — oracle fixtures", () => {
       expect(result.evidence).toHaveLength(oracle.evidence.length);
 
       // Every candidate path must be probed.
-      const origin = new URL(oracle.url).origin;
       for (const path of CANDIDATE_PATHS) {
         expect(calls).toEqual(expect.arrayContaining([`${origin}${path}`]));
       }
@@ -180,6 +179,54 @@ describe("checkMcpServerCard — edge cases", () => {
     const fetchImpl: typeof fetch = async () => {
       throw new Error("ENOTFOUND");
     };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkMcpServerCard(ctx);
+    expect(result.status).toBe("fail");
+  });
+
+  it("accepts alternative {serverInfo:{name,version}, endpoint} shape", async () => {
+    const card = {
+      serverInfo: { name: "my-mcp", version: "2.0.0" },
+      endpoint: "https://example.com/mcp",
+    };
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/.well-known/mcp/server-card.json": {
+        status: 200,
+        headers: JSON_HEADERS,
+        body: JSON.stringify(card),
+      },
+      "https://example.com/.well-known/mcp/server-cards.json": {
+        status: 404,
+        headers: {},
+      },
+      "https://example.com/.well-known/mcp.json": {
+        status: 404,
+        headers: {},
+      },
+    });
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkMcpServerCard(ctx);
+    expect(result.status).toBe("pass");
+    expect(result.details?.name).toBe("my-mcp");
+    expect(result.details?.version).toBe("2.0.0");
+  });
+
+  it("fails when 200 returns invalid JSON", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/.well-known/mcp/server-card.json": {
+        status: 200,
+        headers: JSON_HEADERS,
+        body: "<not json>",
+      },
+      "https://example.com/.well-known/mcp/server-cards.json": {
+        status: 404,
+        headers: {},
+      },
+      "https://example.com/.well-known/mcp.json": {
+        status: 404,
+        headers: {},
+      },
+    });
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkMcpServerCard(ctx);
     expect(result.status).toBe("fail");

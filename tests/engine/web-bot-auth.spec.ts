@@ -81,9 +81,14 @@ describe("checkWebBotAuth — oracle fixtures", () => {
         const got = result.evidence[i]!;
         expect(got.action, `evidence[${i}].action`).toBe(want.action);
         expect(got.label, `evidence[${i}].label`).toBe(want.label);
-        expect(got.finding.outcome, `evidence[${i}].finding.outcome`).toBe(
-          want.finding.outcome,
-        );
+        // Oracle may omit the `finding` field on neutral fetch steps
+        // (shopify fixture); our implementation always emits one. Only
+        // assert parity when the oracle recorded a finding.
+        if (want.finding !== undefined) {
+          expect(got.finding.outcome, `evidence[${i}].finding.outcome`).toBe(
+            want.finding.outcome,
+          );
+        }
       }
     });
   }
