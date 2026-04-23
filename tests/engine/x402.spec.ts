@@ -268,6 +268,61 @@ describe("x402 — additional coverage", () => {
     expect(result.status).toBe("fail");
   });
 
+  it("hostMatches returns false for malformed scheme URLs (defensive URL parsing)", async () => {
+    // A bazaar entry carrying a malformed scheme-ish candidate (e.g.
+    // `ht!tp://nonsense`) would cause `new URL(...)` to throw. The
+    // `hostMatches` helper is exercised indirectly via the bazaar match
+    // path — we verify that a single bad entry does not abort iteration
+    // and that a subsequent valid exact-match entry still passes.
+    const origin = "https://resilient.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          data: [
+            { origin: "ht!tp://nonsense" },
+            { url: "://missing-scheme" },
+            { host: "resilient.test" },
+          ],
+        }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    // If the malformed URL threw unhandled, the outer bazaarMatchesHost
+    // try/catch would swallow it and drop the valid entry → fail. A pass
+    // here proves hostMatches skipped the bad candidate and continued.
+    expect(result.status).toBe("pass");
+  });
+
+  it("returns fail (not error) when every bazaar candidate is a malformed URL", async () => {
+    // Exercises the defensive branch in isolation: no valid candidate
+    // follows the malformed ones, so the scan must return a clean fail.
+    const origin = "https://allbad.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          data: [
+            { origin: "ht!tp://nonsense" },
+            { url: "http://[not-a-valid-ipv6" },
+          ],
+        }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
+
   it("matches an exact-hostname bare-host bazaar entry (H1 positive case)", async () => {
     const origin = "https://exact.test";
     const { fetchImpl } = makeFetchStub({

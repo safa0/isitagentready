@@ -136,18 +136,23 @@ function normaliseHost(h: string): string {
  * we compare the normalised bare hosts directly so a candidate like
  * `a.com:8443` still matches `a.com` / `a.com:8443`.
  *
- * `URL` construction for a well-formed `https://<host>` input effectively
- * never throws, so we deliberately do not wrap it in try/catch — a bare-host
- * fallback covers the no-scheme case explicitly.
+ * Bazaar payloads are attacker-influenced: a malformed scheme-ish candidate
+ * like `"ht!tp://nonsense"` will cause `new URL(...)` to throw. We defensively
+ * wrap URL construction and treat parse failures as a non-match so a single
+ * bad entry cannot abort the scan loop.
  */
 function hostMatches(candidate: string, expected: string): boolean {
-  const exp = normaliseHost(expected);
+  const normalisedExpected = normaliseHost(expected);
   if (candidate.includes("://")) {
-    const u = new URL(candidate);
-    // `u.hostname` strips the port; normalise trailing-dot only.
-    return normaliseHost(u.hostname) === exp;
+    try {
+      const u = new URL(candidate);
+      // `u.hostname` strips the port; normalise trailing-dot only.
+      return normaliseHost(u.hostname) === normalisedExpected;
+    } catch {
+      return false;
+    }
   }
-  return normaliseHost(candidate) === exp;
+  return normaliseHost(candidate) === normalisedExpected;
 }
 
 function bazaarMatchesHost(body: string, host: string): boolean {
