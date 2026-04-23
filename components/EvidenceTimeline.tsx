@@ -177,7 +177,7 @@ export function EvidenceTimeline({
         {evidence.map((step, idx) => (
           <StepCard
             // Steps are static per render and never reordered; index is stable.
-            key={`${step.action}-${idx}-${step.label}`}
+            key={`${step.action}-${step.label}`}
             step={step}
             index={idx}
           />

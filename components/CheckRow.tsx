@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type { CheckId, CheckResult, CheckStatus } from "@/lib/schema";
 import { PROMPTS } from "@/lib/engine/prompts";
 import { CopyPromptButton } from "@/components/CopyPromptButton";
@@ -89,8 +89,13 @@ export function CheckRow({ checkId, check }: CheckRowProps): React.JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const [tab, setTab] = useState<TabKey>(defaultTab(check.status));
 
-  const prompt = useMemo(() => PROMPTS[checkId], [checkId]);
+  useEffect(() => {
+    setTab(defaultTab(check.status));
+  }, [check.status]);
+
+  const prompt = PROMPTS[checkId];
   const label = CHECK_LABEL[checkId];
+  const showTabs = check.status === "fail";
 
   const toggle = (): void => setExpanded((v) => !v);
 
@@ -123,98 +128,109 @@ export function CheckRow({ checkId, check }: CheckRowProps): React.JSX.Element {
 
       {expanded ? (
         <div className="border-t border-border px-4 py-3">
-          <div
-            role="group"
-            aria-label="Check detail tabs"
-            className="mb-3 inline-flex gap-1 rounded-md bg-muted p-1"
-          >
-            <button
-              type="button"
-              data-testid="check-tab-overview"
-              aria-pressed={tab === "overview"}
-              onClick={() => setTab("overview")}
-              className={cn(
-                "rounded px-2 py-1 text-xs font-medium",
-                tab === "overview"
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Overview
-            </button>
-            <button
-              type="button"
-              data-testid="check-tab-audit"
-              aria-pressed={tab === "audit"}
-              onClick={() => setTab("audit")}
-              className={cn(
-                "rounded px-2 py-1 text-xs font-medium",
-                tab === "audit"
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              Audit details
-            </button>
-          </div>
-
-          {tab === "overview" ? (
-            <div
-              data-testid="check-panel-overview"
-              className="flex flex-col gap-3 text-sm"
-            >
-              <div>
-                <h4 className="text-sm font-semibold tracking-tight">
-                  {label}
-                </h4>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {check.message}
-                </p>
-              </div>
-              <div>
-                <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  How to implement
-                </h5>
-                <p className="mt-1 text-sm leading-relaxed">
-                  {prompt.description}
-                </p>
-                <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-                  {prompt.shortPrompt}
-                </p>
-              </div>
-              {prompt.specUrls.length > 0 ? (
-                <div>
-                  <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Resources
-                  </h5>
-                  <ul className="mt-1 flex flex-col gap-1 text-sm">
-                    {prompt.specUrls.map((url) => (
-                      <li key={url}>
-                        <a
-                          href={url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[#F6821F] underline underline-offset-2 hover:opacity-80"
-                        >
-                          {url}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-              <div className="flex flex-wrap items-center gap-2">
-                <CopyPromptButton checkId={checkId} />
-                <Button
+          {showTabs ? (
+            <>
+              <div
+                role="group"
+                aria-label="Check detail tabs"
+                className="mb-3 inline-flex gap-1 rounded-md bg-muted p-1"
+              >
+                <button
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setTab("audit")}
+                  data-testid="check-tab-overview"
+                  aria-pressed={tab === "overview"}
+                  onClick={() => setTab("overview")}
+                  className={cn(
+                    "rounded px-2 py-1 text-xs font-medium",
+                    tab === "overview"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
                 >
-                  View audit details
-                </Button>
+                  Overview
+                </button>
+                <button
+                  type="button"
+                  data-testid="check-tab-audit"
+                  aria-pressed={tab === "audit"}
+                  onClick={() => setTab("audit")}
+                  className={cn(
+                    "rounded px-2 py-1 text-xs font-medium",
+                    tab === "audit"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  Audit details
+                </button>
               </div>
-            </div>
+
+              {tab === "overview" ? (
+                <div
+                  data-testid="check-panel-overview"
+                  className="flex flex-col gap-3 text-sm"
+                >
+                  <div>
+                    <h4 className="text-sm font-semibold tracking-tight">
+                      {label}
+                    </h4>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {check.message}
+                    </p>
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      How to implement
+                    </h5>
+                    <p className="mt-1 text-sm leading-relaxed">
+                      {prompt.description}
+                    </p>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {prompt.shortPrompt}
+                    </p>
+                  </div>
+                  {prompt.specUrls.length > 0 ? (
+                    <div>
+                      <h5 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        Resources
+                      </h5>
+                      <ul className="mt-1 flex flex-col gap-1 text-sm">
+                        {prompt.specUrls.map((url: string) => (
+                          <li key={url}>
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-orange-700 underline underline-offset-2 hover:opacity-80 dark:text-orange-400"
+                            >
+                              {url}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CopyPromptButton checkId={checkId} />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setTab("audit")}
+                    >
+                      View audit details
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div data-testid="check-panel-audit">
+                  <EvidenceTimeline
+                    evidence={check.evidence}
+                    durationMs={check.durationMs}
+                  />
+                </div>
+              )}
+            </>
           ) : (
             <div data-testid="check-panel-audit">
               <EvidenceTimeline

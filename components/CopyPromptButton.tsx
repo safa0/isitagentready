@@ -70,13 +70,13 @@ export function CopyPromptButton({
         variant="outline"
         size="sm"
         onClick={handleClick}
-        aria-live="polite"
       >
         {copied ? "Copied!" : buttonLabel}
       </Button>
       <span
         data-testid="copy-live-region"
         aria-live="polite"
+        aria-atomic="true"
         className="sr-only"
       >
         {copied ? "Prompt copied to clipboard" : ""}

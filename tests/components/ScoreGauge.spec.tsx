@@ -55,6 +55,27 @@ describe("<ScoreGauge />", () => {
     expect(meter).toHaveAttribute("data-color", "green");
   });
 
+  it.each([NaN, Infinity, -Infinity])(
+    "clamps non-finite score %p to 0",
+    (value) => {
+      render(<ScoreGauge score={value} size="md" />);
+      const meter = screen.getByRole("meter");
+      expect(meter).toHaveAttribute("aria-valuenow", "0");
+    },
+  );
+
+  it("colorFor at boundary 40 returns orange", () => {
+    render(<ScoreGauge score={40} size="md" />);
+    const meter = screen.getByRole("meter");
+    expect(meter).toHaveAttribute("data-color", "orange");
+  });
+
+  it("colorFor at boundary 70 returns green", () => {
+    render(<ScoreGauge score={70} size="md" />);
+    const meter = screen.getByRole("meter");
+    expect(meter).toHaveAttribute("data-color", "green");
+  });
+
   it.each([
     ["sm", 80],
     ["md", 160],

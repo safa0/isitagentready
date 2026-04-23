@@ -19,8 +19,14 @@ import cfDevRaw from "@/research/raw/scan-cf-dev.json" with { type: "json" };
  * non-production builds — production returns 404 so we don't ship this route
  * publicly.
  */
+// Rendered at request time so the VERCEL_ENV gate gets live values (the build
+// host sets NODE_ENV=production but VERCEL_ENV=preview, so prerendering would
+// render the page into the preview bundle).
+export const dynamic = "force-dynamic";
+
 export default function DevPrimitivesPage(): React.JSX.Element {
-  if (process.env.NODE_ENV === "production") notFound();
+  const isPublicProd = process.env.VERCEL_ENV === "production";
+  if (isPublicProd) notFound();
 
   const parsed = ScanResponseSchema.parse(cfDevRaw);
 

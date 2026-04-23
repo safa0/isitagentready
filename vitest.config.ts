@@ -46,16 +46,13 @@ export default defineConfig({
       include: [
         "lib/**/*.ts",
         "app/**/route.ts",
-        "components/ScoreGauge.tsx",
-        "components/CategoryCard.tsx",
-        "components/CheckRow.tsx",
-        "components/EvidenceTimeline.tsx",
-        "components/CopyPromptButton.tsx",
+        "components/**/*.tsx",
       ],
       exclude: [
         "lib/skills/**",
         "lib/utils.ts",
         "lib/engine/index.ts",
+        "components/ui/**",
         "**/*.d.ts",
         "**/*.spec.ts",
         "**/*.spec.tsx",

@@ -88,25 +88,26 @@ describe("<CheckRow />", () => {
     expect(screen.queryByTestId("check-panel-audit")).toBeNull();
   });
 
-  it("expanded passing check defaults to Audit tab", () => {
+  it("expanded passing check renders the evidence timeline directly (no tabs)", () => {
     render(
       <CheckRow checkId="robotsTxt" check={makeCheck({ status: "pass" })} />,
     );
 
     fireEvent.click(expandTrigger());
 
-    const auditTab = screen.getByTestId("check-tab-audit");
-    expect(auditTab).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId("check-panel-audit")).toBeInTheDocument();
+    expect(screen.queryByTestId("check-tab-overview")).toBeNull();
+    expect(screen.queryByTestId("check-tab-audit")).toBeNull();
   });
 
-  it("expanded neutral check defaults to Audit tab", () => {
+  it("expanded neutral check renders the evidence timeline directly (no tabs)", () => {
     render(<CheckRow checkId="ap2" check={makeCheck({ status: "neutral" })} />);
 
     fireEvent.click(expandTrigger());
 
-    const auditTab = screen.getByTestId("check-tab-audit");
-    expect(auditTab).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("check-panel-audit")).toBeInTheDocument();
+    expect(screen.queryByTestId("check-tab-overview")).toBeNull();
+    expect(screen.queryByTestId("check-tab-audit")).toBeNull();
   });
 
   it("switches to Audit tab when clicked", () => {
@@ -161,5 +162,26 @@ describe("<CheckRow />", () => {
     expect(trig).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(trig);
     expect(trig).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("resets tab state when check.status changes from fail to pass", () => {
+    const { rerender } = render(
+      <CheckRow checkId="robotsTxt" check={makeCheck()} />,
+    );
+
+    // Expand and switch to the Audit tab in fail state.
+    fireEvent.click(expandTrigger());
+    fireEvent.click(screen.getByTestId("check-tab-audit"));
+    expect(screen.getByTestId("check-panel-audit")).toBeInTheDocument();
+
+    // Re-scan yields a passing check — the tab state should reset, and the
+    // component should now render the timeline directly (no tab strip).
+    rerender(
+      <CheckRow checkId="robotsTxt" check={makeCheck({ status: "pass" })} />,
+    );
+
+    expect(screen.queryByTestId("check-tab-overview")).toBeNull();
+    expect(screen.queryByTestId("check-tab-audit")).toBeNull();
+    expect(screen.getByTestId("check-panel-audit")).toBeInTheDocument();
   });
 });
