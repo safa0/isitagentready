@@ -83,6 +83,10 @@ async function runAgainstOracle(site: OracleSite) {
       .filter((s: any) => s.action === "fetch" && s.request)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((s: any) => ({ url: s.request.url, status: s.response.status }));
+  // Heuristic: the sitemap check emits a `parse` step with this exact label as
+  // its first step whenever it discovered Sitemap directives in robots.txt (see
+  // `PARSE_DIRECTIVES_LABEL` in lib/engine/checks/sitemap.ts). If impl-A ever
+  // renames that label, update it here too — the oracle replay depends on it.
   const declaresViaRobots =
     firstStep?.action === "parse" &&
     firstStep?.label === "Extract Sitemap directives from robots.txt";
@@ -282,6 +286,120 @@ describe("sitemap — edge cases", () => {
     const ctx = createScanContext({ url: "https://junk.test", fetchImpl });
     const result = await checkSitemap(ctx);
     expect(result.status).toBe("fail");
+  });
+
+  // Exercises the XMLParser.parse() catch arm in parseSitemapBody. An
+  // unclosed CDATA block reliably throws in fast-xml-parser 5.x (default
+  // options are otherwise lenient; see ad-hoc probing in iter-2 review).
+  it("fails when a sitemap returns 200 but XMLParser throws on the body", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://cdata.test/robots.txt": new Error("ENOTFOUND"),
+      "https://cdata.test/sitemap-index.xml": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/xml" },
+        // Unclosed CDATA -> fast-xml-parser throws "CDATA is not closed".
+        body: "<urlset><url><loc><![CDATA[x</loc></url></urlset>",
+      },
+      "https://cdata.test/sitemap.xml.gz": {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "text/html" },
+      },
+      "https://cdata.test/sitemap_index.xml": {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "text/html" },
+      },
+      "https://cdata.test/sitemap.xml": {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "text/html" },
+      },
+    });
+    const ctx = createScanContext({ url: "https://cdata.test", fetchImpl });
+    const result = await checkSitemap(ctx);
+    expect(result.status).toBe("fail");
+    // The first fetch should be recorded as negative (parsed-as-invalid).
+    const firstFetch = result.evidence.find(
+      (s: EvidenceStep) => s.action === "fetch",
+    )!;
+    expect(firstFetch.finding.outcome).toBe("negative");
+  });
+
+  // Exercises the `catch` arms in resolveCandidate and labelFor: a Sitemap
+  // directive whose value cannot be parsed by `new URL(candidate, origin)`
+  // should produce a negative fetch step via the "Could not parse" path and
+  // then allow the check to move on to conclude.
+  it("handles unparseable Sitemap URLs declared in robots.txt", async () => {
+    const badCandidate = "http://[";
+    const { fetchImpl, calls } = makeFetchStub({
+      "https://badurl.test/robots.txt": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/plain" },
+        body: `Sitemap: ${badCandidate}\nUser-agent: *\n`,
+      },
+    });
+    const ctx = createScanContext({ url: "https://badurl.test", fetchImpl });
+    const result = await checkSitemap(ctx);
+    expect(result.status).toBe("fail");
+    // Label falls back to the raw string via labelFor's catch arm.
+    const fetchLabels = result.evidence
+      .filter((s: EvidenceStep) => s.action === "fetch")
+      .map((s: EvidenceStep) => s.label);
+    expect(fetchLabels).toContain(`GET ${badCandidate}`);
+    // No real fetch is attempted for the unparseable candidate.
+    expect(calls).not.toContain(badCandidate);
+  });
+
+  // Exercises the `outcome.response === undefined` arm inside the sitemap
+  // probe loop: a declared Sitemap URL whose fetch throws should produce a
+  // negative fetch step and then continue to conclude.
+  it("records a negative fetch step when a declared sitemap's fetch throws", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://throwsm.test/robots.txt": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/plain" },
+        body: "Sitemap: https://throwsm.test/sitemap.xml\nUser-agent: *\n",
+      },
+      "https://throwsm.test/sitemap.xml": new Error("ECONNRESET"),
+    });
+    const ctx = createScanContext({ url: "https://throwsm.test", fetchImpl });
+    const result = await checkSitemap(ctx);
+    expect(result.status).toBe("fail");
+    const probeFetch = result.evidence.find(
+      (s: EvidenceStep) =>
+        s.action === "fetch" && s.label === "GET /sitemap.xml",
+    )!;
+    expect(probeFetch.finding.outcome).toBe("negative");
+    expect(probeFetch.response).toBeUndefined();
+    expect(probeFetch.finding.summary).toContain("ECONNRESET");
+  });
+
+  // Exercises the transport-error fallback arm in the sitemap probe loop:
+  // when `outcome.error` is falsy (empty string), summary uses the "no
+  // response" message instead of interpolating the error.
+  it("uses the no-response fallback when a probe transport error has no message", async () => {
+    const emptyErr = new Error("");
+    const { fetchImpl } = makeFetchStub({
+      "https://silentsm.test/robots.txt": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/plain" },
+        body: "Sitemap: https://silentsm.test/sitemap.xml\nUser-agent: *\n",
+      },
+      "https://silentsm.test/sitemap.xml": emptyErr,
+    });
+    const ctx = createScanContext({ url: "https://silentsm.test", fetchImpl });
+    const result = await checkSitemap(ctx);
+    expect(result.status).toBe("fail");
+    const probeFetch = result.evidence.find(
+      (s: EvidenceStep) =>
+        s.action === "fetch" && s.label === "GET /sitemap.xml",
+    )!;
+    expect(probeFetch.finding.summary).toContain("failed with no response");
   });
 
   it("accepts a <sitemapindex> root as a valid sitemap", async () => {

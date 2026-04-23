@@ -85,7 +85,11 @@ function extractSitemapUrls(body: string | undefined): string[] {
   return urls;
 }
 
-/** Render a site-relative or absolute sitemap URL into a concise label. */
+/**
+ * Render a site-relative or absolute sitemap URL into a concise label.
+ * Falls back to the raw string when parsing fails (e.g. a malformed Sitemap
+ * directive pulled from robots.txt).
+ */
 function labelFor(urlStr: string, origin: string): string {
   try {
     const u = new URL(urlStr, origin);
@@ -95,11 +99,16 @@ function labelFor(urlStr: string, origin: string): string {
   }
 }
 
-function resolveCandidate(candidate: string, origin: string): string {
+/**
+ * Resolve a candidate against the origin. Returns `undefined` when the value
+ * is unparseable — callers record a negative evidence step for that candidate
+ * and move on rather than throwing out of the whole check.
+ */
+function resolveCandidate(candidate: string, origin: string): string | undefined {
   try {
     return new URL(candidate, origin).toString();
   } catch {
-    return candidate;
+    return undefined;
   }
 }
 
@@ -137,8 +146,17 @@ export async function checkSitemap(ctx: ScanContext): Promise<CheckResult> {
 
   for (const candidate of candidates) {
     const resolved = resolveCandidate(candidate, ctx.origin);
-    const outcome: FetchOutcome = await ctx.fetch(resolved);
     const label = labelFor(candidate, ctx.origin);
+    if (resolved === undefined) {
+      evidence.push(
+        makeStep("fetch", label, {
+          outcome: "negative",
+          summary: `Could not parse sitemap URL ${candidate}`,
+        }),
+      );
+      continue;
+    }
+    const outcome: FetchOutcome = await ctx.fetch(resolved);
 
     if (outcome.response === undefined) {
       evidence.push(

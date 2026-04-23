@@ -185,6 +185,24 @@ describe("robotsTxt — edge cases", () => {
     expect(fetchStep.finding.outcome).toBe("negative");
   });
 
+  // Exercises the transport-error fallback arm where `outcome.error` is falsy
+  // (empty string). Matches the same shape as the link-headers transport spec.
+  it("records the fallback summary when a transport error has no message", async () => {
+    const emptyErr = new Error("");
+    const { fetchImpl } = makeFetchStub({
+      "https://silent.test/robots.txt": emptyErr,
+    });
+    const ctx = createScanContext({ url: "https://silent.test", fetchImpl });
+    const result = await checkRobotsTxt(ctx);
+    expect(result.status).toBe("fail");
+    const fetchStep = result.evidence.find(
+      (s: EvidenceStep) => s.action === "fetch",
+    )!;
+    expect(fetchStep.finding.summary).toBe(
+      "Request failed with no response",
+    );
+  });
+
   it("memoises /robots.txt via ctx.getRobotsTxt (single upstream fetch)", async () => {
     const { fetchImpl, calls } = makeFetchStub({
       "https://memo.test/robots.txt": {

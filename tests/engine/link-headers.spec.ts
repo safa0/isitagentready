@@ -206,4 +206,107 @@ describe("linkHeaders — edge cases", () => {
       expect.arrayContaining(["service-doc", "service-desc", "describedby"]),
     );
   });
+
+  // Exercises the inQuotes branch and the comma-inside-quotes suppression in
+  // splitTopLevel: the comma inside the quoted title must NOT split the entry.
+  it("handles a quoted title that contains a comma", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://qtitle.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "text/html",
+          link: '</docs>; title="note, with comma"; rel="service-doc"',
+        },
+        body: "<html/>",
+      },
+    });
+    const ctx = createScanContext({ url: "https://qtitle.test", fetchImpl });
+    const result = await checkLinkHeaders(ctx);
+    expect(result.status).toBe("pass");
+    expect(result.details?.totalLinks).toBe(1);
+    const rels = (
+      result.details?.relationsFound as Array<{ rel: string }>
+    ).map((r) => r.rel);
+    expect(rels).toEqual(["service-doc"]);
+  });
+
+  // Exercises the `raw[i - 1] !== "\\"` escape-guard inside splitTopLevel:
+  // the escaped inner quote must not prematurely close the quoted region.
+  it("handles an escaped quote inside a quoted title", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://escq.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "text/html",
+          link: '</docs>; title="an \\"escaped\\" quote"; rel="service-doc"',
+        },
+        body: "<html/>",
+      },
+    });
+    const ctx = createScanContext({ url: "https://escq.test", fetchImpl });
+    const result = await checkLinkHeaders(ctx);
+    expect(result.status).toBe("pass");
+    const rels = (
+      result.details?.relationsFound as Array<{ rel: string }>
+    ).map((r) => r.rel);
+    expect(rels).toEqual(["service-doc"]);
+  });
+
+  // Exercises parseSingleLink's "no rel attribute" branch (returns undefined)
+  // and the outer `continue` path in parseLinkHeader.
+  it("skips entries that declare no rel attribute", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://norel.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "text/html",
+          link: "</docs>; foo=bar",
+        },
+        body: "<html/>",
+      },
+    });
+    const ctx = createScanContext({ url: "https://norel.test", fetchImpl });
+    const result = await checkLinkHeaders(ctx);
+    expect(result.status).toBe("fail");
+    expect(result.details?.totalLinks).toBe(0);
+  });
+
+  // Exercises the empty-rel branch: relValue.length === 0 after trim.
+  it("skips entries with an empty rel attribute", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://emptyrel.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: {
+          "content-type": "text/html",
+          link: '</docs>; rel=""',
+        },
+        body: "<html/>",
+      },
+    });
+    const ctx = createScanContext({ url: "https://emptyrel.test", fetchImpl });
+    const result = await checkLinkHeaders(ctx);
+    expect(result.status).toBe("fail");
+    expect(result.details?.totalLinks).toBe(0);
+  });
+
+  // Exercises the fallback arm of the transport-error summary when
+  // `outcome.error` is falsy (empty string). Context sets `error = err.message`
+  // for thrown Errors; an Error with an empty message reproduces that.
+  it("records the fallback summary when a transport error has no message", async () => {
+    const emptyErr = new Error("");
+    const { fetchImpl } = makeFetchStub({
+      "https://silent.test/": emptyErr,
+    });
+    const ctx = createScanContext({ url: "https://silent.test", fetchImpl });
+    const result = await checkLinkHeaders(ctx);
+    expect(result.status).toBe("fail");
+    const fetchStep = result.evidence.find((s) => s.action === "fetch")!;
+    expect(fetchStep.finding.summary).toBe(
+      "Homepage request failed with no response",
+    );
+  });
 });

@@ -91,9 +91,11 @@ function splitTopLevel(raw: string): string[] {
   let inQuotes = false;
   let buf = "";
   for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i]!;
+    const ch = raw[i];
+    if (ch === undefined) continue;
     if (inQuotes) {
       buf += ch;
+      // Simple \" escape detection; does not handle \\" sequences. Not observed in fixtures.
       if (ch === '"' && raw[i - 1] !== "\\") inQuotes = false;
       continue;
     }
@@ -120,9 +122,11 @@ function parseSingleLink(
 ): { href: string; rels: string[] } | undefined {
   const uriMatch = /^<([^>]+)>/.exec(entry);
   if (uriMatch === null) return undefined;
-  const href = uriMatch[1]!;
+  const href = uriMatch[1];
+  if (href === undefined) return undefined;
 
-  const relMatch = /;\s*rel\s*=\s*(?:"([^"]+)"|([^\s;,]+))/i.exec(entry);
+  // First-wins per RFC 8288; duplicate rel attrs in the same entry are ignored.
+  const relMatch = /;\s*rel\s*=\s*(?:"([^"]*)"|([^\s;,]+))/i.exec(entry);
   if (relMatch === null) return undefined;
   const relValue = (relMatch[1] ?? relMatch[2] ?? "").trim();
   if (relValue.length === 0) return undefined;

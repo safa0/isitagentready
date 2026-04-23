@@ -46,9 +46,8 @@ const USER_AGENT_DIRECTIVE = /^\s*user-agent\s*:/im;
 // ---------------------------------------------------------------------------
 
 function hasPlainTextContentType(
-  headers: Record<string, string> | undefined,
+  headers: Record<string, string>,
 ): boolean {
-  if (headers === undefined) return false;
   const ct = headers["content-type"] ?? "";
   return ct.toLowerCase().startsWith("text/plain");
 }
