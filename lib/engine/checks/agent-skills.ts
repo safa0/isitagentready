@@ -82,12 +82,24 @@ function normaliseSkillEntries(skills: readonly unknown[]): SkillEntry[] {
   return out;
 }
 
-function extractSpecVersion(parsed: Record<string, unknown>): string | undefined {
+/** Legacy heuristic — matches the reference scanner (cf-dev fixture). */
+const LEGACY_SPEC_VERSION = "0.1.0";
+
+function extractSpecVersion(
+  parsed: Record<string, unknown>,
+  indexPath: string,
+): string | undefined {
   const schema = parsed.$schema;
-  if (typeof schema !== "string") return undefined;
-  // https://schemas.agentskills.io/discovery/0.2.0/schema.json
-  const match = /discovery\/(\d+\.\d+(?:\.\d+)?)\//.exec(schema);
-  return match?.[1];
+  if (typeof schema === "string") {
+    // https://schemas.agentskills.io/discovery/0.2.0/schema.json
+    const match = /discovery\/(\d+\.\d+(?:\.\d+)?)\//.exec(schema);
+    if (match?.[1] !== undefined) return match[1];
+  }
+  // Legacy fallback: when we hit /.well-known/skills/index.json and the body
+  // carries no $schema, the reference scanner reports specVersion "0.1.0"
+  // (see research/raw/scan-cf-dev.json). Mirror that behaviour.
+  if (indexPath === LEGACY_PATH) return LEGACY_SPEC_VERSION;
+  return undefined;
 }
 
 function skillDisplayName(skill: SkillEntry): string {
@@ -341,7 +353,7 @@ export async function checkAgentSkills(
     resolvedSkills: resolvedCount,
     path: indexPath,
   };
-  const specVersion = extractSpecVersion(indexObj);
+  const specVersion = extractSpecVersion(indexObj, indexPath);
   if (specVersion !== undefined) {
     details.specVersion = specVersion;
   }

@@ -127,6 +127,7 @@ describe("agentSkills — pass behaviour", () => {
     });
     const ctx = createScanContext({ url: "https://ok.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("pass");
     expect(result.details).toMatchObject({
       skillCount: 3,
@@ -164,6 +165,39 @@ describe("agentSkills — pass behaviour", () => {
     const ctx = createScanContext({ url: "https://legacy.test", fetchImpl });
     const result = await checkAgentSkills(ctx);
     expect(result.status).toBe("pass");
+    expect(result.details?.path).toBe("/.well-known/skills/index.json");
+  });
+
+  it("emits specVersion '0.1.0' on a legacy-shape pass (cf-dev oracle parity)", async () => {
+    // Legacy body: no $schema, under /.well-known/skills/index.json — matches
+    // the reference scanner's cf-dev fixture (see research/raw/scan-cf-dev.json).
+    const indexBody = JSON.stringify({
+      skills: [{ id: "demo", name: "Demo", href: "/skills/demo/SKILL.md" }],
+    });
+    const { fetchImpl } = makeFetchStub({
+      "https://cf-shape.test/.well-known/agent-skills/index.json": {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "text/html" },
+        body: "",
+      },
+      "https://cf-shape.test/.well-known/skills/index.json": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: indexBody,
+      },
+      "https://cf-shape.test/skills/demo/SKILL.md": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/markdown" },
+        body: "# Demo",
+      },
+    });
+    const ctx = createScanContext({ url: "https://cf-shape.test", fetchImpl });
+    const result = await checkAgentSkills(ctx);
+    expect(result.status).toBe("pass");
+    expect(result.details?.specVersion).toBe("0.1.0");
     expect(result.details?.path).toBe("/.well-known/skills/index.json");
   });
 

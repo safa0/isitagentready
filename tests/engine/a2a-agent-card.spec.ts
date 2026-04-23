@@ -99,6 +99,7 @@ describe("a2aAgentCard — edge cases", () => {
     });
     const ctx = createScanContext({ url: "https://ok.test", fetchImpl });
     const result = await checkA2aAgentCard(ctx);
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("pass");
     expect(result.details).toMatchObject({
       name: "Example Agent",

@@ -1,16 +1,17 @@
 /**
- * Failing specs for the `webMcp` check.
+ * Specs for the `webMcp` check.
  *
- * Oracle: `research/raw/scan-*.json` → `checks.discovery.webMcp`.
  * Reference: `research/FINDINGS.md` §3, §9, §13 (gaps).
  *
- * IMPLEMENTATION NOTE: the reference scanner uses a headless Chromium to
- * evaluate page JS and detect `navigator.modelContext.{registerTool,
- * provideContext}` calls at runtime. Our static fallback cannot do real JS
- * evaluation, so evidence steps diverge from the oracle shape. What we CAN
- * honour on-oracle is the final `status` and `message`: every fixture's site
- * lacks any static reference to `navigator.modelContext`, and we produce the
- * same `"No WebMCP tools detected on page load"` fail verdict.
+ * webMcp has no structural oracle coverage by design — the reference scanner
+ * uses a headless Chromium instance to evaluate page JS at runtime and detect
+ * `navigator.modelContext.{registerTool,provideContext}` calls live. A static
+ * scanner cannot match the Chromium-based oracle's evidence shape, and a
+ * trivial "every fixture exits cleanly" loop would be tautological (it would
+ * only assert the final `status`+`message` against an identical stubbed
+ * empty-HTML homepage for every site). Instead, we exercise the static
+ * fallback directly against hand-rolled fixtures below: pass paths (inline +
+ * linked), the SSRF guard, fail paths, and robustness cases.
  *
  * Static-fallback detection flow:
  *   1. Fetch the homepage HTML.
@@ -24,58 +25,11 @@
 
 import { describe, it, expect } from "vitest";
 
-import {
-  ALL_SITES,
-  loadOracle,
-  makeFetchStub,
-  type OracleSite,
-} from "./_helpers/oracle";
+import { makeFetchStub } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema, type EvidenceStep } from "@/lib/schema";
 
-// Not-yet-implemented check; import fails until impl ships the file.
 import { checkWebMcp } from "@/lib/engine/checks/web-mcp";
-
-// ---------------------------------------------------------------------------
-// Oracle round-trip — we assert on status + message only (evidence shape
-// diverges because we're a static fallback, not a real browser).
-// ---------------------------------------------------------------------------
-
-async function runOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const webMcpOracle = oracle.raw.checks.discovery.webMcp as any;
-
-  // Every fixture's oracle records "No WebMCP tools". Our static fallback
-  // must still produce that verdict when the homepage has no references and
-  // no linked scripts do either. We stub the homepage with an empty HTML
-  // body so the fallback exits cleanly.
-  const routes: Record<string, Parameters<typeof makeFetchStub>[0][string]> = {
-    [`${oracle.origin}/`]: {
-      status: 200,
-      statusText: "OK",
-      headers: { "content-type": "text/html" },
-      body: "<!doctype html><html><head></head><body>no tools</body></html>",
-    },
-  };
-
-  const { fetchImpl } = makeFetchStub(routes);
-  const ctx = createScanContext({ url: oracle.origin, fetchImpl });
-  const result = await checkWebMcp(ctx);
-  return { oracle: webMcpOracle, result };
-}
-
-describe("webMcp", () => {
-  it.each(ALL_SITES)(
-    "%s: status + message match the oracle (evidence shape diverges by design)",
-    async (site) => {
-      const { oracle, result } = await runOracle(site);
-      expect(CheckResultSchema.safeParse(result).success).toBe(true);
-      expect(result.status).toBe(oracle.status);
-      expect(result.message).toBe(oracle.message);
-    },
-  );
-});
 
 // ---------------------------------------------------------------------------
 // Static fallback — pass paths
@@ -98,6 +52,7 @@ describe("webMcp — static fallback pass paths", () => {
     });
     const ctx = createScanContext({ url: "https://inline.test", fetchImpl });
     const result = await checkWebMcp(ctx);
+    expect(CheckResultSchema.safeParse(result).success).toBe(true);
     expect(result.status).toBe("pass");
     expect(result.message).toMatch(/webmcp|modelcontext|detected/i);
     expect(result.details).toMatchObject({
@@ -175,6 +130,55 @@ describe("webMcp — SSRF guard", () => {
       (s) =>
         s.finding.summary.toLowerCase().includes("cross-origin") ||
         s.finding.summary.toLowerCase().includes("skip"),
+    );
+    expect(skipStep).toBeDefined();
+  });
+
+  it("skips same-host-different-port scripts (distinct origin per RFC 6454)", async () => {
+    const html = `<html><body>
+      <script src="https://guard.test:8443/x.js"></script>
+    </body></html>`;
+    const { fetchImpl, calls } = makeFetchStub({
+      "https://guard.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+    });
+    const ctx = createScanContext({ url: "https://guard.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    expect(result.status).toBe("fail");
+    expect(
+      calls.some((u) => u.startsWith("https://guard.test:8443/")),
+    ).toBe(false);
+    const skipStep = result.evidence.find((s) =>
+      s.finding.summary.toLowerCase().includes("cross-origin"),
+    );
+    expect(skipStep).toBeDefined();
+  });
+
+  it("skips protocol-relative script URLs that resolve to a different host", async () => {
+    const html = `<html><body>
+      <script src="//cdn.evil.com/x.js"></script>
+    </body></html>`;
+    const { fetchImpl, calls } = makeFetchStub({
+      "https://guard.test/": {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+    });
+    const ctx = createScanContext({ url: "https://guard.test", fetchImpl });
+    const result = await checkWebMcp(ctx);
+    expect(result.status).toBe("fail");
+    // Protocol-relative URL resolves to https://cdn.evil.com/x.js — must skip.
+    expect(calls.some((u) => u.startsWith("https://cdn.evil.com/"))).toBe(
+      false,
+    );
+    const skipStep = result.evidence.find((s) =>
+      s.finding.summary.toLowerCase().includes("cross-origin"),
     );
     expect(skipStep).toBeDefined();
   });
@@ -304,8 +308,13 @@ describe("webMcp — fail paths", () => {
     const ctx = createScanContext({ url: "https://many.test", fetchImpl });
     const result = await checkWebMcp(ctx);
     expect(result.status).toBe("fail");
-    // Homepage + at most 20 scripts fetched (implementation cap).
-    expect(calls.length).toBeLessThanOrEqual(21);
+    // Exactly 20 script fetches (the implementation cap) — no more, no fewer.
+    const scriptCalls = calls.filter((u) => /\/s\d+\.js$/.test(u));
+    expect(scriptCalls).toHaveLength(20);
+    // Negative assertion: scripts s20..s24 must never be fetched.
+    for (let i = 20; i < 25; i++) {
+      expect(calls.some((u) => u.endsWith(`/s${i}.js`))).toBe(false);
+    }
   });
 });
 

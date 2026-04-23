@@ -10,6 +10,12 @@
  * - Fail on 404, transport error, non-JSON body, missing required fields,
  *   or an empty skills array.
  *
+ * NOTE (FINDINGS §9 divergence): FINDINGS §9 phrases the pass predicate in
+ *   terms of `supportedInterfaces`. This implementation intentionally follows
+ *   FINDINGS §3 + the task brief + skill-a2a-agent-card.md and uses
+ *   `{ name, version, skills: non-empty[] }` as the pass predicate. Treat the
+ *   §9 wording as a doc bug — the skill/task contract is authoritative.
+ *
  * NOTE: this check is reported regardless of the user's enabledChecks opt-in
  * status — the scoring layer is responsible for excluding it from the
  * denominator when the user hasn't opted in. FINDINGS §13 pt. 4.

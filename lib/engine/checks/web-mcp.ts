@@ -53,7 +53,15 @@ const FAIL_MESSAGE = "No WebMCP tools detected on page load";
 const WEBMCP_API_REGEX =
   /navigator\s*\.\s*modelContext\s*\.\s*(registerTool|provideContext)\s*\(/;
 
-/** Match `<script ...>...</script>` non-greedily to capture inline bodies. */
+/**
+ * Match `<script ...>...</script>` non-greedily to capture inline bodies.
+ *
+ * NOTE: this mirrors browser HTML parser rules loosely — it cuts the body at
+ * the first `</script` sequence and does NOT handle `>` characters embedded
+ * inside quoted attribute values (e.g. `<script data-x="a>b">`). Real browsers
+ * tokenise attributes properly; we accept the edge case because the WebMCP
+ * API signature we match is unlikely to appear in such pathological markup.
+ */
 const INLINE_SCRIPT_REGEX = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
 
 /** Match a `src="..."` or `src='...'` or bare `src=...` attribute. */
