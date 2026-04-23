@@ -18,6 +18,20 @@
  * a2a result, matching both shopify and vercel oracles which record an
  * absent card.
  *
+ * Default-path divergence from the reference scanner
+ * --------------------------------------------------
+ * The reference (isitagentready.com) scanner runs `a2aAgentCard` by default
+ * and therefore always records an AP2 pass/fail. This port keeps
+ * `a2aAgentCard` OFF by default (see `DEFAULT_ENABLED_CHECKS`), which means
+ * AP2 returns a `neutral "Skipped: requires a2aAgentCard to be enabled."`
+ * verdict unless the caller explicitly opts in. This divergence from the
+ * reference scanner is intentional — the A2A Agent Card probe is a long-tail
+ * well-known fetch that most callers don't need, and emitting a blanket
+ * "fail" on every non-a2a scan would penalise sites that simply aren't using
+ * A2A yet. Callers who want full parity should pass
+ * `enabledChecks: [...DEFAULT_ENABLED_CHECKS, "a2aAgentCard"]` (or an
+ * explicit full list) to `runScan`.
+ *
  * Commerce gating mirrors the other commerce checks: when `isCommerce` is
  * false, the top-level status is forced to "neutral" and
  * " (not a commerce site)" is appended to the message. The inner evidence

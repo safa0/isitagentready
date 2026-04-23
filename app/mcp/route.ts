@@ -23,8 +23,9 @@ import { z } from "zod";
 import { runScan, ScanUrlError } from "@/lib/engine";
 import { ProfileSchema, CheckIdSchema } from "@/lib/schema";
 import {
-  defaultRateLimiter,
+  mcpRateLimiter,
   extractClientIp,
+  rateLimitHeaders,
 } from "@/lib/api/rate-limiter";
 
 // ---------------------------------------------------------------------------
@@ -89,19 +90,46 @@ function createServer(): McpServer {
 // Route handler
 // ---------------------------------------------------------------------------
 
-function errorResponse(message: string, status: number): Response {
+function errorResponse(
+  message: string,
+  status: number,
+  extraHeaders: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify({ error: message }), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
   });
 }
 
-export async function POST(req: Request): Promise<Response> {
-  // 1. Rate limit.
-  const ip = extractClientIp(req);
-  if (!defaultRateLimiter.check(ip, Date.now())) {
-    return errorResponse("Too many requests. Please retry later.", 429);
+/**
+ * Clone a Response with additional headers. Needed because the MCP SDK's
+ * transport.handleRequest builds the Response object itself and we can't
+ * pass headers through at construction time.
+ */
+async function withExtraHeaders(
+  res: Response,
+  extraHeaders: Record<string, string>,
+): Promise<Response> {
+  const headers = new Headers(res.headers);
+  for (const [key, value] of Object.entries(extraHeaders)) {
+    headers.set(key, value);
   }
+  const body = await res.arrayBuffer();
+  return new Response(body, { status: res.status, statusText: res.statusText, headers });
+}
+
+export async function POST(req: Request): Promise<Response> {
+  // 1. Rate limit (MCP-specific bucket — tighter cap than REST).
+  const ip = extractClientIp(req);
+  const now = Date.now();
+  if (!mcpRateLimiter.check(ip, now)) {
+    return errorResponse(
+      "Too many requests. Please retry later.",
+      429,
+      rateLimitHeaders(mcpRateLimiter.snapshot(ip, now)),
+    );
+  }
+  const limitHeaders = rateLimitHeaders(mcpRateLimiter.snapshot(ip, now));
 
   // 2. Stateless: new server + transport per request.
   const server = createServer();
@@ -111,7 +139,8 @@ export async function POST(req: Request): Promise<Response> {
 
   try {
     await server.connect(transport);
-    return await transport.handleRequest(req);
+    const res = await transport.handleRequest(req);
+    return await withExtraHeaders(res, limitHeaders);
   } catch {
     // Static error envelope — never leak the internal message.
     return new Response(
@@ -122,7 +151,7 @@ export async function POST(req: Request): Promise<Response> {
       }),
       {
         status: 500,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...limitHeaders },
       },
     );
   }

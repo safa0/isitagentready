@@ -4,6 +4,7 @@ import {
   BODY_PREVIEW_TRUNCATED_SUFFIX,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_USER_AGENT,
+  RESPONSE_BODY_MAX_BYTES,
   createScanContext,
   fetchToStep,
   headersToRecord,
@@ -427,6 +428,81 @@ describe("createScanContext - redirect handling (SSRF defence)", () => {
     });
     const outcome = await ctx.fetch("/out");
     expect(outcome.error).toMatch(/Redirect blocked/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Response body byte cap (L-test-1)
+// ---------------------------------------------------------------------------
+
+describe("createScanContext - response body byte cap", () => {
+  it("truncates response bodies at RESPONSE_BODY_MAX_BYTES (slice-and-drop branch)", async () => {
+    // A single oversized chunk forces the "chunk larger than remaining"
+    // branch inside `readBodyCapped`, which slices the chunk down and then
+    // cancels the reader.
+    const chunk = new Uint8Array(RESPONSE_BODY_MAX_BYTES + 4096).fill(65);
+    const fetchImpl: typeof fetch = async () =>
+      new Response(chunk, { status: 200 });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl,
+    });
+    const outcome = await ctx.fetch("/big");
+    expect(outcome.response?.status).toBe(200);
+    expect(outcome.body).toBeDefined();
+    expect(outcome.body!.length).toBe(RESPONSE_BODY_MAX_BYTES);
+  });
+
+  it("truncates when the boundary is hit across multiple chunks", async () => {
+    // Build the response out of two chunks that straddle the 1 MiB cap so
+    // the `remaining <= 0` branch on the second read is also covered.
+    const chunkSize = 768 * 1024; // 768 KiB → two chunks = 1.5 MiB total.
+    const chunk1 = new Uint8Array(chunkSize).fill(66);
+    const chunk2 = new Uint8Array(chunkSize).fill(67);
+    const body = new Uint8Array(chunkSize * 2);
+    body.set(chunk1, 0);
+    body.set(chunk2, chunkSize);
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, { status: 200 });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl,
+    });
+    const outcome = await ctx.fetch("/big2");
+    expect(outcome.body).toBeDefined();
+    expect(outcome.body!.length).toBeLessThanOrEqual(RESPONSE_BODY_MAX_BYTES);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-hop relative redirects (L-sec-1)
+// ---------------------------------------------------------------------------
+
+describe("createScanContext - relative redirect chains", () => {
+  it("resolves relative Location against the previous hop, not the original URL", async () => {
+    const { fetch, calls } = redirectFetchStub({
+      "https://example.com/deep/start": {
+        status: 302,
+        location: "/hop1", // resolves against origin /deep/start → /hop1
+      },
+      "https://example.com/hop1": {
+        status: 302,
+        location: "hop2", // relative to /hop1 → /hop2
+      },
+      "https://example.com/hop2": { status: 200, body: "done" },
+    });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+    });
+    const outcome = await ctx.fetch("/deep/start");
+    expect(outcome.response?.status).toBe(200);
+    expect(outcome.body).toBe("done");
+    expect(calls).toEqual([
+      "https://example.com/deep/start",
+      "https://example.com/hop1",
+      "https://example.com/hop2",
+    ]);
   });
 });
 

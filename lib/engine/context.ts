@@ -106,7 +106,8 @@ export interface ScanContextOptions {
   /**
    * Orchestrator signal used to cancel in-flight fetches on scan timeout or
    * explicit abort. Composed with each fetch's own per-request timeout via
-   * `AbortSignal.any`.
+   * a hand-composed AbortController (see `composeSignals`) — we deliberately
+   * avoid `AbortSignal.any` for broader runtime compatibility.
    */
   readonly signal?: AbortSignal;
   /**
@@ -343,6 +344,11 @@ async function performFetch(
   try {
     let res = await fetchImpl(input, { ...init, signal, redirect: "manual" });
     let hops = 0;
+    // Track the URL of the PREVIOUS hop so relative `Location` headers resolve
+    // against it, not the original request URL. Per RFC 7231 §7.1.2, a
+    // relative Location is resolved against the effective request URI of the
+    // immediately preceding request.
+    let currentUrl: URL = input;
     // Manual redirect handling: validate each Location against the SSRF
     // guard so an attacker can't bounce the scanner to a private host.
     while (res.status >= 300 && res.status < 400 && hops < MAX_REDIRECT_HOPS) {
@@ -350,7 +356,7 @@ async function performFetch(
       if (location === null) break;
       let nextUrl: URL;
       try {
-        nextUrl = normaliseScanUrl(new URL(location, input).toString());
+        nextUrl = normaliseScanUrl(new URL(location, currentUrl).toString());
         assertPublicUrl(nextUrl);
       } catch (err) {
         const error =
@@ -368,6 +374,7 @@ async function performFetch(
         // Ignore; we're about to issue another fetch.
       }
       hops += 1;
+      currentUrl = nextUrl;
       res = await fetchImpl(nextUrl, { ...init, signal, redirect: "manual" });
     }
     if (res.status >= 300 && res.status < 400 && hops >= MAX_REDIRECT_HOPS) {

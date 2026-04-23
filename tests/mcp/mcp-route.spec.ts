@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { defaultRateLimiter } from "@/lib/api/rate-limiter";
+import { defaultRateLimiter, mcpRateLimiter } from "@/lib/api/rate-limiter";
 
 // Mock the engine so tools/call tests are deterministic.
 vi.mock("@/lib/engine", async (importOriginal) => {
@@ -17,6 +17,7 @@ vi.mock("@/lib/engine", async (importOriginal) => {
 
 beforeEach(() => {
   defaultRateLimiter.reset();
+  mcpRateLimiter.reset();
 });
 
 afterEach(() => {
@@ -51,7 +52,7 @@ describe("POST /mcp", () => {
       body: "not json",
     });
     const res = await POST(req);
-    expect([400, 406, 415, 422, 500]).toContain(res.status);
+    expect([400, 406, 415, 422]).toContain(res.status);
   });
 
   it("responds to MCP initialize with serverInfo", async () => {

@@ -14,6 +14,7 @@
  */
 
 import type {
+  CategoryId,
   CheckId,
   CheckResult,
   NextLevel,
@@ -33,6 +34,7 @@ import {
 } from "@/lib/engine/security";
 import {
   ALL_CHECK_IDS,
+  CHECK_CATEGORY,
   DEFAULT_ENABLED_CHECKS,
 } from "@/lib/engine/scoring";
 import { determineLevel } from "@/lib/engine/levels";
@@ -160,6 +162,28 @@ async function runCheck(
   }
 }
 
+/**
+ * Project flat `results` into the categorised `ScanResponse.checks` shape,
+ * driven entirely by `CHECK_CATEGORY`. A missing result (e.g. a check id
+ * absent from `results` for any reason) is backfilled with a neutral
+ * "skipped" record so the response always satisfies `ChecksBlockSchema`.
+ */
+function projectByCategory(
+  results: Record<CheckId, CheckResult>,
+): ScanResponse["checks"] {
+  const out: Record<CategoryId, Record<string, CheckResult>> = {
+    discoverability: {},
+    contentAccessibility: {},
+    botAccessControl: {},
+    discovery: {},
+    commerce: {},
+  };
+  for (const id of ALL_CHECK_IDS) {
+    out[CHECK_CATEGORY[id]][id] = results[id] ?? neutralSkipped();
+  }
+  return out as ScanResponse["checks"];
+}
+
 function buildNextLevel(
   outcome: ReturnType<typeof determineLevel>,
 ): NextLevel | null {
@@ -252,10 +276,12 @@ export async function runScan(
     a2aAgentCardEnabled: a2aEnabled,
   });
 
-  // Step 4: run all remaining checks in parallel.
+  // Step 4: run all remaining checks in parallel. Dispatch synchronously
+  // (map returns the pending promises up-front) and only await the collective
+  // result via Promise.all — the `.then` pair shape makes that explicit.
   const pairs = await Promise.all(
-    PARALLEL_IDS.map(
-      async (id) => [id, await runCheck(id, ctx, enabled)] as const,
+    PARALLEL_IDS.map((id) =>
+      runCheck(id, ctx, enabled).then((r) => [id, r] as const),
     ),
   );
 
@@ -279,37 +305,7 @@ export async function runScan(
     scannedAt: new Date().toISOString(),
     level: levelOutcome.level,
     levelName: levelOutcome.levelName,
-    checks: {
-      discoverability: {
-        robotsTxt: results.robotsTxt,
-        sitemap: results.sitemap,
-        linkHeaders: results.linkHeaders,
-      },
-      contentAccessibility: {
-        markdownNegotiation: results.markdownNegotiation,
-      },
-      botAccessControl: {
-        robotsTxtAiRules: results.robotsTxtAiRules,
-        contentSignals: results.contentSignals,
-        webBotAuth: results.webBotAuth,
-      },
-      discovery: {
-        apiCatalog: results.apiCatalog,
-        oauthDiscovery: results.oauthDiscovery,
-        oauthProtectedResource: results.oauthProtectedResource,
-        mcpServerCard: results.mcpServerCard,
-        a2aAgentCard: results.a2aAgentCard,
-        agentSkills: results.agentSkills,
-        webMcp: results.webMcp,
-      },
-      commerce: {
-        x402: results.x402,
-        mpp: results.mpp,
-        ucp: results.ucp,
-        acp: results.acp,
-        ap2: results.ap2,
-      },
-    },
+    checks: projectByCategory(results),
     nextLevel: buildNextLevel(levelOutcome),
     isCommerce: commerce.isCommerce,
     commerceSignals: [...commerce.commerceSignals],

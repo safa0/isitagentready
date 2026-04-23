@@ -7,12 +7,16 @@
  *   - IP extraction prefers platform-trusted headers (H2: XFF spoof bypass)
  */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createRateLimiter,
   defaultRateLimiter,
   extractClientIp,
+  mcpRateLimiter,
+  MCP_MAX_REQUESTS,
+  DEFAULT_MAX_REQUESTS,
+  rateLimitHeaders,
 } from "@/lib/api/rate-limiter";
 
 describe("createRateLimiter - token bucket", () => {
@@ -76,6 +80,57 @@ describe("defaultRateLimiter.reset", () => {
   });
 });
 
+describe("rateLimiter - snapshot", () => {
+  it("returns full-budget snapshot for an untracked key", () => {
+    const limiter = createRateLimiter({ windowMs: 1000, maxRequests: 5 });
+    const snap = limiter.snapshot("fresh", 1_000_000);
+    expect(snap.limit).toBe(5);
+    expect(snap.remaining).toBe(5);
+    expect(snap.resetAt).toBe(1_001_000);
+  });
+
+  it("decrements remaining after each check() call", () => {
+    const limiter = createRateLimiter({ windowMs: 1000, maxRequests: 3 });
+    limiter.check("ip", 1);
+    expect(limiter.snapshot("ip", 1).remaining).toBe(2);
+    limiter.check("ip", 1);
+    expect(limiter.snapshot("ip", 1).remaining).toBe(1);
+  });
+
+  it("clamps remaining to 0 once the cap is hit", () => {
+    const limiter = createRateLimiter({ windowMs: 1000, maxRequests: 1 });
+    limiter.check("ip", 1);
+    limiter.check("ip", 1); // denied
+    expect(limiter.snapshot("ip", 1).remaining).toBe(0);
+  });
+});
+
+describe("mcpRateLimiter", () => {
+  it("has a lower cap than the default (REST) limiter", () => {
+    expect(MCP_MAX_REQUESTS).toBeLessThan(DEFAULT_MAX_REQUESTS);
+  });
+
+  it("exposes its tighter cap via snapshot()", () => {
+    mcpRateLimiter.reset();
+    const snap = mcpRateLimiter.snapshot("who", Date.now());
+    expect(snap.limit).toBe(MCP_MAX_REQUESTS);
+  });
+});
+
+describe("rateLimitHeaders", () => {
+  it("renders X-RateLimit-* fields from a snapshot", () => {
+    const headers = rateLimitHeaders({
+      limit: 10,
+      remaining: 4,
+      resetAt: 1_700_000_500,
+    });
+    expect(headers["x-ratelimit-limit"]).toBe("10");
+    expect(headers["x-ratelimit-remaining"]).toBe("4");
+    // Reset is epoch-SECONDS (ceil of epoch-millis / 1000).
+    expect(headers["x-ratelimit-reset"]).toBe("1700001");
+  });
+});
+
 describe("extractClientIp", () => {
   function reqWith(headers: Record<string, string>): Request {
     return new Request("http://localhost/", { method: "POST", headers });
@@ -119,5 +174,52 @@ describe("extractClientIp", () => {
     });
     expect(extractClientIp(req)).not.toBe("attacker-spoofed");
     expect(extractClientIp(req)).toBe("203.0.113.9");
+  });
+});
+
+describe("extractClientIp - untrusted forwarding posture (MED-5)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function reqWith(headers: Record<string, string>): Request {
+    return new Request("http://localhost/", { method: "POST", headers });
+  }
+
+  it("ignores x-forwarded-for when neither VERCEL=1 nor TRUST_FORWARDED=true", () => {
+    // vitest.config sets TRUST_FORWARDED=true for the whole test run; we
+    // un-trust it for this case to exercise the default off-platform posture.
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("TRUST_FORWARDED", "");
+    const req = reqWith({ "x-forwarded-for": "203.0.113.99" });
+    expect(extractClientIp(req)).toBe("unknown");
+  });
+
+  it("ignores x-real-ip when neither VERCEL=1 nor TRUST_FORWARDED=true", () => {
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("TRUST_FORWARDED", "");
+    const req = reqWith({ "x-real-ip": "198.51.100.2" });
+    expect(extractClientIp(req)).toBe("unknown");
+  });
+
+  it("still honours x-vercel-forwarded-for regardless of env (platform always injects)", () => {
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("TRUST_FORWARDED", "");
+    const req = reqWith({ "x-vercel-forwarded-for": "203.0.113.33" });
+    expect(extractClientIp(req)).toBe("203.0.113.33");
+  });
+
+  it("honours XFF when TRUST_FORWARDED=true (operator opt-in)", () => {
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("TRUST_FORWARDED", "true");
+    const req = reqWith({ "x-forwarded-for": "203.0.113.44" });
+    expect(extractClientIp(req)).toBe("203.0.113.44");
+  });
+
+  it("honours XFF when VERCEL=1", () => {
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("TRUST_FORWARDED", "");
+    const req = reqWith({ "x-forwarded-for": "203.0.113.55" });
+    expect(extractClientIp(req)).toBe("203.0.113.55");
   });
 });

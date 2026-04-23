@@ -92,6 +92,21 @@ describe("isPrivateHost", () => {
     expect(isPrivateHost("::")).toBe(true);
   });
 
+  it("treats 6to4 (2002::/16) addresses as private", () => {
+    expect(isPrivateHost("2002:c0a8:0101::1")).toBe(true); // wraps 192.168.1.1
+    expect(isPrivateHost("2002:7f00:1::1")).toBe(true); // wraps 127.0.0.1
+  });
+
+  it("treats NAT64 well-known prefix (64:ff9b::/96) as private", () => {
+    expect(isPrivateHost("64:ff9b::1.2.3.4")).toBe(true);
+    expect(isPrivateHost("64:ff9b::0808:0808")).toBe(true);
+  });
+
+  it("treats deprecated IPv6 site-local (fec0::/10) as private", () => {
+    expect(isPrivateHost("fec0::1")).toBe(true);
+    expect(isPrivateHost("feff::1")).toBe(true);
+  });
+
   it("treats foo.localhost and ip6-* variants as private", () => {
     expect(isPrivateHost("foo.localhost")).toBe(true);
     expect(isPrivateHost("bar.baz.localhost")).toBe(true);

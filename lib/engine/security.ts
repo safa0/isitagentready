@@ -132,6 +132,16 @@ function isPrivateIPv6(host: string): boolean {
   if (/^fc[0-9a-f]{2}:/.test(inner) || /^fd[0-9a-f]{2}:/.test(inner)) return true;
   // fe80::/10 = link-local (fe80..febf)
   if (/^fe[89ab][0-9a-f]:/.test(inner)) return true;
+  // fec0::/10 = site-local (deprecated; still-reserved to defeat legacy hosts)
+  if (/^fec[0-9a-f]:/.test(inner) || /^fed[0-9a-f]:/.test(inner)) return true;
+  if (/^fee[0-9a-f]:/.test(inner) || /^fef[0-9a-f]:/.test(inner)) return true;
+  // 2002::/16 = 6to4 — can wrap a private IPv4, treat as private since we
+  // can't easily decode the embedded address without a full IPv6 parser.
+  if (/^2002:/.test(inner)) return true;
+  // 64:ff9b::/96 = NAT64 well-known prefix. Addresses under this prefix
+  // embed an IPv4 — most operators use it for internal translation, so
+  // refuse in the same spirit as the v4-mapped and 6to4 blocks above.
+  if (/^64:ff9b:/.test(inner)) return true;
   return false;
 }
 

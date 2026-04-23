@@ -27,6 +27,7 @@ import { getAgentReport } from "@/lib/engine/prompts";
 import {
   defaultRateLimiter,
   extractClientIp,
+  rateLimitHeaders,
 } from "@/lib/api/rate-limiter";
 
 // ---------------------------------------------------------------------------
@@ -39,19 +40,18 @@ const SCAN_TIMEOUT_MS = 25_000;
 const MAX_BODY_BYTES = 16 * 1024;
 
 // ---------------------------------------------------------------------------
-// Test hook (kept for existing route spec)
-// ---------------------------------------------------------------------------
-
-export function __resetRateLimiter(): void {
-  defaultRateLimiter.reset();
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function errorResponse(message: string, status: number): NextResponse {
-  return NextResponse.json({ error: message }, { status });
+function errorResponse(
+  message: string,
+  status: number,
+  extraHeaders: Record<string, string> = {},
+): NextResponse {
+  return NextResponse.json(
+    { error: message },
+    { status, headers: extraHeaders },
+  );
 }
 
 async function readBodyCapped(
@@ -125,8 +125,13 @@ export async function POST(req: Request): Promise<Response> {
   const ip = extractClientIp(req);
   const now = Date.now();
   if (!defaultRateLimiter.check(ip, now)) {
-    return errorResponse("Too many requests. Please retry later.", 429);
+    return errorResponse(
+      "Too many requests. Please retry later.",
+      429,
+      rateLimitHeaders(defaultRateLimiter.snapshot(ip, now)),
+    );
   }
+  const limitHeaders = rateLimitHeaders(defaultRateLimiter.snapshot(ip, now));
 
   // 2. Parse + validate body.
   let body: unknown;
@@ -134,10 +139,10 @@ export async function POST(req: Request): Promise<Response> {
     body = await parseBody(req);
   } catch (err) {
     if (err instanceof PayloadTooLargeError) {
-      return errorResponse(err.message, 413);
+      return errorResponse(err.message, 413, limitHeaders);
     }
     const message = err instanceof SyntaxError ? err.message : "Invalid body.";
-    return errorResponse(message, 400);
+    return errorResponse(message, 400, limitHeaders);
   }
   const parsed = ScanRequestSchema.safeParse(body);
   if (!parsed.success) {
@@ -146,7 +151,7 @@ export async function POST(req: Request): Promise<Response> {
       first !== undefined
         ? `Invalid request: ${first.path.join(".")} ${first.message}`
         : "Invalid request body.";
-    return errorResponse(message, 400);
+    return errorResponse(message, 400, limitHeaders);
   }
 
   // 3. Run scan with scan-wide timeout. The AbortController propagates into
@@ -166,13 +171,13 @@ export async function POST(req: Request): Promise<Response> {
     });
   } catch (err) {
     if (err instanceof ScanUrlError) {
-      return errorResponse(err.message, 400);
+      return errorResponse(err.message, 400, limitHeaders);
     }
     if (controller.signal.aborted) {
-      return errorResponse("Scan timed out.", 504);
+      return errorResponse("Scan timed out.", 504, limitHeaders);
     }
     // Deliberately opaque: do not leak internal state.
-    return errorResponse("Scan failed.", 500);
+    return errorResponse("Scan failed.", 500, limitHeaders);
   } finally {
     clearTimeout(timer);
   }
@@ -192,8 +197,11 @@ export async function POST(req: Request): Promise<Response> {
     });
     return new Response(body, {
       status: 200,
-      headers: { "content-type": "text/markdown; charset=utf-8" },
+      headers: {
+        "content-type": "text/markdown; charset=utf-8",
+        ...limitHeaders,
+      },
     });
   }
-  return NextResponse.json(result, { status: 200 });
+  return NextResponse.json(result, { status: 200, headers: limitHeaders });
 }

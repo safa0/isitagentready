@@ -4,7 +4,8 @@
 
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 
-import { POST, __resetRateLimiter } from "@/app/api/scan/route";
+import { POST } from "@/app/api/scan/route";
+import { defaultRateLimiter } from "@/lib/api/rate-limiter";
 import { ScanResponseSchema } from "@/lib/schema";
 
 // We stub out the engine only for the happy-path test and restore it
@@ -33,7 +34,7 @@ function jsonRequest(
 }
 
 beforeEach(() => {
-  __resetRateLimiter();
+  defaultRateLimiter.reset();
 });
 
 describe("POST /api/scan - validation", () => {
