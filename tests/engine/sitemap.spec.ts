@@ -71,12 +71,42 @@ async function runAgainstOracle(site: OracleSite) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (s: any) => s.action === "fetch" && s.label === "GET /robots.txt",
   );
+  // When the oracle reports sitemaps discovered via robots.txt (first step
+  // is the "Extract Sitemap directives" parse step), synthesize a robots.txt
+  // body that declares each fetched sitemap URL so our directive extractor
+  // produces the same count. The real bodyPreview is truncated and often
+  // drops the Sitemap directives, so we can't rely on it verbatim.
+  const firstStep = sitemapOracle.evidence[0];
+  const sitemapFetches: Array<{ url: string; status: number }> =
+    sitemapOracle.evidence
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((s: any) => s.action === "fetch" && s.request)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((s: any) => ({ url: s.request.url, status: s.response.status }));
+  const declaresViaRobots =
+    firstStep?.action === "parse" &&
+    firstStep?.label === "Extract Sitemap directives from robots.txt";
+
   if (robotsFetch !== undefined) {
+    const basePreview = bodyFromPreview(robotsFetch.response.bodyPreview);
+    // Count Sitemap directives already in the preserved preview so we don't
+    // duplicate them when synthesizing (e.g. vercel's preview contains the
+    // single real directive).
+    const existing = (basePreview.match(/^\s*sitemap\s*:/gim) ?? []).length;
+    const needed = declaresViaRobots
+      ? Math.max(0, sitemapFetches.length - existing)
+      : 0;
+    const missing = declaresViaRobots
+      ? sitemapFetches.slice(existing, existing + needed)
+      : [];
+    const synthSitemapLines = missing.length
+      ? missing.map((f) => `Sitemap: ${f.url}`).join("\n") + "\n"
+      : "";
     routes[`${oracle.origin}/robots.txt`] = {
       status: robotsFetch.response.status,
       statusText: robotsFetch.response.statusText,
       headers: robotsFetch.response.headers,
-      body: bodyFromPreview(robotsFetch.response.bodyPreview),
+      body: `${basePreview}\n${synthSitemapLines}User-agent: *\nAllow: /\n`,
     };
   }
 
