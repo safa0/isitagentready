@@ -126,8 +126,10 @@ function isPrivateIPv6(host: string): boolean {
   // misclassified loopback (e.g. [::ffff:7f00:1]) dwarfs the false-positive
   // cost.
   if (/^::ffff:/i.test(inner)) return true;
-  // IPv4-compatible IPv6 (deprecated, ::0:0:0:0:a.b.c.d) — likewise refuse.
-  if (/^::[0-9a-f]/i.test(inner) && inner !== "::1" && inner !== "::") return true;
+  // IPv4-compatible IPv6 (deprecated, ::a.b.c.d) — likewise refuse. Restrict
+  // to the dotted-quad form so legitimate IPv6 addresses like `::2` aren't
+  // misclassified as private. `::` and `::1` are already handled above.
+  if (/^::(\d{1,3}\.){3}\d{1,3}$/.test(inner)) return true;
   // fc00::/7 = ULA (fc00..fdff)
   if (/^fc[0-9a-f]{2}:/.test(inner) || /^fd[0-9a-f]{2}:/.test(inner)) return true;
   // fe80::/10 = link-local (fe80..febf)

@@ -66,6 +66,15 @@ describe("isPrivateHost", () => {
     expect(isPrivateHost("8.8.8.8")).toBe(false);
     expect(isPrivateHost("example.com")).toBe(false);
     expect(isPrivateHost("2606:4700::1")).toBe(false);
+    // `::2` is a legitimate public IPv6 literal; only the deprecated
+    // IPv4-compatible dotted-quad form (::a.b.c.d) should be refused.
+    expect(isPrivateHost("::2")).toBe(false);
+    expect(isPrivateHost("::abcd")).toBe(false);
+  });
+
+  it("treats deprecated IPv4-compatible IPv6 (::a.b.c.d) as private", () => {
+    expect(isPrivateHost("::127.0.0.1")).toBe(true);
+    expect(isPrivateHost("::192.168.1.1")).toBe(true);
   });
 
   it("treats `localhost` and variants as private", () => {
