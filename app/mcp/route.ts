@@ -105,17 +105,23 @@ function errorResponse(
  * Clone a Response with additional headers. Needed because the MCP SDK's
  * transport.handleRequest builds the Response object itself and we can't
  * pass headers through at construction time.
+ *
+ * Preserves streaming by passing `res.body` through directly instead of
+ * buffering the entire response into memory via `arrayBuffer()`.
  */
-async function withExtraHeaders(
+function withExtraHeaders(
   res: Response,
   extraHeaders: Record<string, string>,
-): Promise<Response> {
+): Response {
   const headers = new Headers(res.headers);
   for (const [key, value] of Object.entries(extraHeaders)) {
     headers.set(key, value);
   }
-  const body = await res.arrayBuffer();
-  return new Response(body, { status: res.status, statusText: res.statusText, headers });
+  return new Response(res.body, {
+    status: res.status,
+    statusText: res.statusText,
+    headers,
+  });
 }
 
 export async function POST(req: Request): Promise<Response> {
@@ -140,7 +146,7 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await server.connect(transport);
     const res = await transport.handleRequest(req);
-    return await withExtraHeaders(res, limitHeaders);
+    return withExtraHeaders(res, limitHeaders);
   } catch {
     // Static error envelope — never leak the internal message.
     return new Response(

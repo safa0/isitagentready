@@ -144,6 +144,18 @@ describe("extractClientIp", () => {
     expect(extractClientIp(req)).toBe("203.0.113.1");
   });
 
+  it("uses the RIGHTMOST x-vercel-forwarded-for entry (platform annotation)", () => {
+    const req = reqWith({
+      "x-vercel-forwarded-for": "1.1.1.1, 2.2.2.2",
+    });
+    expect(extractClientIp(req)).toBe("2.2.2.2");
+  });
+
+  it("ignores an empty x-vercel-forwarded-for header", () => {
+    const req = reqWith({ "x-vercel-forwarded-for": "   " });
+    expect(extractClientIp(req)).toBe("unknown");
+  });
+
   it("uses the RIGHTMOST x-forwarded-for entry (platform annotation)", () => {
     const req = reqWith({
       "x-forwarded-for": "evil-client, platform-hop, 203.0.113.2",
@@ -207,6 +219,15 @@ describe("extractClientIp - untrusted forwarding posture (MED-5)", () => {
     vi.stubEnv("TRUST_FORWARDED", "");
     const req = reqWith({ "x-vercel-forwarded-for": "203.0.113.33" });
     expect(extractClientIp(req)).toBe("203.0.113.33");
+  });
+
+  it("uses rightmost x-vercel-forwarded-for entry regardless of env", () => {
+    vi.stubEnv("VERCEL", "");
+    vi.stubEnv("TRUST_FORWARDED", "");
+    const req = reqWith({
+      "x-vercel-forwarded-for": "attacker-spoofed, 203.0.113.77",
+    });
+    expect(extractClientIp(req)).toBe("203.0.113.77");
   });
 
   it("honours XFF when TRUST_FORWARDED=true (operator opt-in)", () => {

@@ -224,8 +224,10 @@ function isForwardedTrusted(): boolean {
  * Extract the caller's IP from request headers.
  *
  * Trust-aware priority order:
- *   1. `x-vercel-forwarded-for` — platform-injected on Vercel; not
- *      client-settable. Trusted whenever the header is present.
+ *   1. `x-vercel-forwarded-for` RIGHTMOST entry — platform-injected on
+ *      Vercel; not client-settable. Parsed rightmost for consistency with
+ *      XFF: the last entry is the platform's own annotation of the
+ *      immediate peer. Trusted whenever the header is present.
  *   2. (trusted only) `x-forwarded-for` RIGHTMOST entry — the platform's
  *      own annotation of the immediate peer. Using the leftmost entry is
  *      unsafe because it is attacker-controlled.
@@ -239,8 +241,14 @@ function isForwardedTrusted(): boolean {
 export function extractClientIp(req: Request): string {
   const vercelIp = req.headers.get("x-vercel-forwarded-for");
   if (vercelIp !== null) {
-    const first = vercelIp.split(",")[0]?.trim();
-    if (first !== undefined && first.length > 0) return first;
+    const parts = vercelIp
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (parts.length > 0) {
+      const last = parts[parts.length - 1];
+      if (last !== undefined) return last;
+    }
   }
   const trusted = isForwardedTrusted();
   if (trusted) {
