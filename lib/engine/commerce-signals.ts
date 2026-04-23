@@ -130,11 +130,13 @@ const META_REGEXES: ReadonlyArray<{ signal: string; re: RegExp }> = [
 ];
 
 /**
- * Platform meta regexes. We deliberately scope matches to two narrow shapes
+ * Platform meta regexes. We deliberately scope matches to three narrow shapes
  * so unrelated descriptive copy doesn't trigger a false positive:
- *   1. `<meta name="generator" content="...shopify...">` (the conventional
- *      CMS/platform self-identification meta), or
- *   2. `<meta name="shopify...">` / `<meta name="woocommerce...">` etc. —
+ *   1. `<meta name="generator" content="...shopify...">` — the conventional
+ *      CMS/platform self-identification meta (name-first).
+ *   2. `<meta content="...shopify..." name="generator">` — the same meta
+ *      with reversed attribute order (valid per HTML; emitted by some CMSs).
+ *   3. `<meta name="shopify...">` / `<meta name="woocommerce...">` etc. —
  *      a platform-named meta tag.
  * A previous implementation matched any meta attribute value containing the
  * vendor token, which over-matched pages like
@@ -146,19 +148,19 @@ const PLATFORM_META_REGEXES: ReadonlyArray<{
 }> = [
   {
     id: "shopify",
-    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*shopify[^"']*["']|<meta\s+[^>]*name\s*=\s*["']shopify[^"']*["']/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*shopify[^"']*["']|<meta\s+[^>]*content\s*=\s*["'][^"']*shopify[^"']*["'][^>]*name\s*=\s*["']generator["']|<meta\s+[^>]*name\s*=\s*["']shopify[^"']*["']/i,
   },
   {
     id: "woocommerce",
-    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*woocommerce[^"']*["']|<meta\s+[^>]*name\s*=\s*["']woocommerce[^"']*["']/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*woocommerce[^"']*["']|<meta\s+[^>]*content\s*=\s*["'][^"']*woocommerce[^"']*["'][^>]*name\s*=\s*["']generator["']|<meta\s+[^>]*name\s*=\s*["']woocommerce[^"']*["']/i,
   },
   {
     id: "magento",
-    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*magento[^"']*["']|<meta\s+[^>]*name\s*=\s*["']magento[^"']*["']/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*magento[^"']*["']|<meta\s+[^>]*content\s*=\s*["'][^"']*magento[^"']*["'][^>]*name\s*=\s*["']generator["']|<meta\s+[^>]*name\s*=\s*["']magento[^"']*["']/i,
   },
   {
     id: "bigcommerce",
-    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*bigcommerce[^"']*["']|<meta\s+[^>]*name\s*=\s*["']bigcommerce[^"']*["']/i,
+    re: /<meta\s+[^>]*name\s*=\s*["']generator["'][^>]*content\s*=\s*["'][^"']*bigcommerce[^"']*["']|<meta\s+[^>]*content\s*=\s*["'][^"']*bigcommerce[^"']*["'][^>]*name\s*=\s*["']generator["']|<meta\s+[^>]*name\s*=\s*["']bigcommerce[^"']*["']/i,
   },
 ];
 

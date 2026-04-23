@@ -112,7 +112,12 @@ describe("acp — shopify oracle (isCommerce=true)", () => {
   });
 });
 
-describe("acp — oracle round-trip (M1)", () => {
+// These tests assert that the check's gating behaviour (status + message)
+// is consistent across all oracle origins when the probe responses are
+// stubbed to the negative baseline. They do NOT replay the full evidence
+// timeline structurally — that is deferred pending real pass-case
+// fixtures, after which we'd switch to `expectCheckMatchesOracle`.
+describe("acp — gating across origins", () => {
   it.each(ALL_SITES)(
     "matches the oracle status + message for %s",
     async (site) => {

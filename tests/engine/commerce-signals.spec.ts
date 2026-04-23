@@ -341,6 +341,60 @@ describe("detectCommerce — platform heuristics", () => {
     ]);
   });
 
+  it("matches the shopify fixture's commerceSignals array exactly (L5 fixture parity)", async () => {
+    // Directly reads the oracle's `commerceSignals` from
+    // `research/raw/scan-shopify.json` and asserts byte-for-byte parity
+    // with the detector's output under a realistic stub. This is stricter
+    // than the synthetic ordering test above because the oracle itself is
+    // the source of truth.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const oracle = require("../../research/raw/scan-shopify.json");
+    const origin = new URL(oracle.url).origin;
+    const html = [
+      "<!doctype html><html><head>",
+      '<meta name="generator" content="Shopify">',
+      '<script src="https://cdn.shopify.com/shopifycloud/shopify/assets/static/controllers/checkout-web-pixel-shared-worker.js"></script>',
+      "</head><body>shop</body></html>",
+    ].join("\n");
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: html,
+      },
+      [`${origin}/checkout`]: { status: 200 },
+      [`${origin}/product`]: { status: 200 },
+      [`${origin}/shop`]: { status: 200 },
+      [`${origin}/cart`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await detectCommerce(ctx);
+    expect(result.commerceSignals).toEqual(oracle.commerceSignals);
+  });
+
+  it("flags a reversed-attribute Shopify generator meta (L2)", async () => {
+    const origin = "https://rev.test";
+    const html =
+      '<!doctype html><html><head>' +
+      '<meta content="Shopify" name="generator">' +
+      '</head><body>hi</body></html>';
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: {
+        status: 200,
+        headers: { "content-type": "text/html" },
+        body: html,
+      },
+      [`${origin}/checkout`]: { status: 404 },
+      [`${origin}/product`]: { status: 404 },
+      [`${origin}/shop`]: { status: 404 },
+      [`${origin}/cart`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await detectCommerce(ctx);
+    expect(result.isCommerce).toBe(true);
+    expect(result.commerceSignals).toContain("meta:shopify");
+  });
+
   it("tolerates individual HEAD probe failures", async () => {
     const origin = "https://parthead.test";
     const { fetchImpl } = makeFetchStub({

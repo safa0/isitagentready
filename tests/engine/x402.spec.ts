@@ -355,9 +355,138 @@ describe("x402 — additional coverage", () => {
     expect(homeStep).toBeDefined();
     expect(homeStep?.finding.summary).toMatch(/request failed/);
   });
+
+  // --- M1: hostname port-match parity -------------------------------------
+  it("matches a bazaar entry when both scan host and candidate share a non-default port (M1)", async () => {
+    const origin = "https://example.com:8443";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          data: [{ origin: "https://example.com:8443/api" }],
+        }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("matches a bare-host bazaar entry carrying an explicit port against a default-port scan (M1 fallback)", async () => {
+    const origin = "https://example.com";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: [{ host: "example.com:8443" }] }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  // --- L3: trailing-dot FQDN normalisation --------------------------------
+  it("matches when the bazaar candidate uses a trailing-dot FQDN (L3)", async () => {
+    const origin = "https://a.com";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: [{ origin: "https://a.com./" }] }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("matches when the scan host is FQDN trailing-dot and the bazaar candidate is not (L3 reverse)", async () => {
+    // createScanContext normalises the input URL; to exercise the reverse
+    // direction we rely on the fact that `URL` preserves a trailing dot in
+    // `hostname` when the authority was supplied with one. Since the
+    // scanner constructs `ctx.url` from the user-supplied URL string, a
+    // bare-host candidate without a trailing dot must still match.
+    const origin = "https://a.com.";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: [{ host: "a.com" }] }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  // --- L1: empty accepts[] is no longer an x402 body ----------------------
+  it("does NOT pass on a 402 body whose only x402 marker is an empty accepts[] (L1)", async () => {
+    const origin = "https://empty-accepts.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accepts: [] }),
+      },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+    const apiStep = result.evidence[2];
+    expect(apiStep?.finding.summary).toMatch(
+      /402 but body is not an x402 payment requirements document/,
+    );
+  });
+
+  it("does NOT pass when x402Version is a non-scalar (L1 type check)", async () => {
+    const origin = "https://bad-version.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ x402Version: { major: 1 }, accepts: [] }),
+      },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
 });
 
-describe("x402 — oracle round-trip (M1)", () => {
+// These tests assert that the check's gating behaviour (status + message)
+// is consistent across all oracle origins when the probe responses are
+// stubbed to the negative baseline. They do NOT replay the full evidence
+// timeline structurally — that is deferred pending real pass-case
+// fixtures, after which we'd switch to `expectCheckMatchesOracle`.
+describe("x402 — gating across origins", () => {
   it.each(ALL_SITES)(
     "matches the oracle status + message for %s",
     async (site) => {
