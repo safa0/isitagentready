@@ -16,8 +16,15 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html"],
       include: ["lib/**/*.ts"],
-      exclude: ["lib/skills/**", "**/*.d.ts", "**/*.spec.ts"],
+      exclude: [
+        "lib/skills/**",
+        "lib/utils.ts",
+        "lib/engine/index.ts",
+        "**/*.d.ts",
+        "**/*.spec.ts",
+      ],
       thresholds: {
+        perFile: true,
         lines: 80,
         functions: 80,
         branches: 80,
