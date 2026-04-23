@@ -215,6 +215,9 @@ describe("checkContentSignals — edge cases", () => {
     expect(signals[0]!.aiTrain).toBe("no");
     expect(signals[1]!.path).toBeNull();
     expect(signals[1]!.aiTrain).toBe("yes");
+    expect(result.evidence[result.evidence.length - 1]!.finding.outcome).toBe(
+      "positive",
+    );
   });
 
   it("silently drops unrecognized signal values", async () => {
@@ -237,6 +240,30 @@ describe("checkContentSignals — edge cases", () => {
     expect(signals).toHaveLength(1);
     expect(signals[0]!.search).toBeNull();
     expect(signals[0]!.aiTrain).toBe("no");
+    expect(result.evidence[result.evidence.length - 1]!.finding.outcome).toBe(
+      "positive",
+    );
+  });
+
+  it("ignores unknown Content-Signal keys", async () => {
+    // `foo=yes` is not a recognised key (search/ai-input/ai-train); it should
+    // be silently dropped while the sibling `ai-train=no` is still captured.
+    const body = "User-Agent: *\nContent-Signal: foo=yes, ai-train=no\n";
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    const ctx = createScanContext({
+      url: "https://unknownkey.test",
+      fetchImpl,
+    });
+    const result = await checkContentSignals(ctx);
+    expect(result.status).toBe("pass");
+    const signals = result.details?.signals as Array<Record<string, unknown>>;
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.aiTrain).toBe("no");
+    expect(signals[0]!).not.toHaveProperty("foo");
   });
 
   it("skips Content-Signal lines with no key=value pairs", async () => {
@@ -259,6 +286,9 @@ describe("checkContentSignals — edge cases", () => {
     expect(signals[0]!.search).toBeNull();
     expect(signals[0]!.aiInput).toBeNull();
     expect(signals[0]!.aiTrain).toBeNull();
+    expect(result.evidence[result.evidence.length - 1]!.finding.outcome).toBe(
+      "positive",
+    );
   });
 
   it("fails when robots.txt has no Content-Signal directive", async () => {

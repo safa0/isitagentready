@@ -60,7 +60,7 @@ export function buildFailNoRobots(params: {
     outcome.response === undefined
       ? {
           outcome: "negative" as const,
-          summary: `Transport error fetching robots.txt: ${outcome.error ?? "unknown"}`,
+          summary: `Transport error fetching robots.txt: ${outcome.error}`,
         }
       : {
           outcome: "negative" as const,
