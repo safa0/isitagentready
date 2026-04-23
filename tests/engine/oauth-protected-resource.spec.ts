@@ -8,18 +8,20 @@
  *
  * Oracle observations across 5 fixtures (all 5 fail):
  *   - 3 evidence steps in each: homepage fetch + well-known fetch + conclude.
- *   - Order varies per fixture (shopify probes well-known first, cf-dev
- *     homepage first). We tolerate both.
+ *   - The oracle captures resolution order which varies per fixture. Our
+ *     implementation now emits in fixed DISPATCH order (homepage then
+ *     well-known), so we compare by label (order-independent for non-terminal
+ *     steps) and still assert the conclusion is last.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
   ALL_SITES,
-  loadOracle,
+  expectCheckMatchesOracle,
   makeFetchStub,
-  type OracleSite,
-  type StubHandler,
+  runCheckAgainstOracle,
+  type OracleCheckLike,
 } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
@@ -30,67 +32,39 @@ import { checkOauthProtectedResource } from "@/lib/engine/checks/oauth-protected
 // Oracle round-trip
 // ---------------------------------------------------------------------------
 
-function getOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return oracle.raw.checks.discovery.oauthProtectedResource as any;
-}
-
-async function runAgainstOracle(site: OracleSite) {
-  const loaded = loadOracle(site);
-  const check = getOracle(site);
-
-  const routes: Record<string, StubHandler> = {};
-  for (const step of check.evidence) {
-    if (step.action !== "fetch" || !step.request || !step.response) continue;
-    routes[step.request.url] = {
-      status: step.response.status,
-      statusText: step.response.statusText,
-      headers: step.response.headers ?? {},
-      body: step.response.bodyPreview ?? "",
-    };
-  }
-  // The homepage URL in the oracle is recorded without trailing slash
-  // (e.g. "https://example.com") but ctx.fetch("/") produces
-  // "https://example.com/". Register both forms to keep the stub happy.
-  if (routes[loaded.origin] !== undefined) {
-    routes[`${loaded.origin}/`] = routes[loaded.origin];
-  }
-
-  const stub = makeFetchStub(routes);
-  const ctx = createScanContext({
-    url: loaded.url,
-    fetchImpl: stub.fetchImpl,
-  });
-  const result = await checkOauthProtectedResource(ctx);
-  return { result, oracle: check, origin: loaded.origin, calls: stub.calls };
+function getOracleEntry(raw: unknown): OracleCheckLike {
+  return (
+    raw as {
+      checks: { discovery: { oauthProtectedResource: OracleCheckLike } };
+    }
+  ).checks.discovery.oauthProtectedResource;
 }
 
 describe("checkOauthProtectedResource — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle, origin, calls } = await runAgainstOracle(site);
+      const { result, oracle, origin, calls } = await runCheckAgainstOracle({
+        site,
+        getOracleEntry,
+        runCheck: checkOauthProtectedResource,
+      });
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
+      expectCheckMatchesOracle(result, oracle, { evidenceOrder: "by-label" });
 
-      expect(result.status).toBe(oracle.status);
-      expect(result.message).toBe(oracle.message);
-      expect(result.evidence).toHaveLength(oracle.evidence.length);
-
-      // Homepage call may come in as either origin or origin/ — tolerate both.
-      const sawHomepage = calls.some(
-        (c) => c === origin || c === `${origin}/`,
+      // Dispatch order: homepage first, well-known second.
+      expect(result.evidence[0]!.label).toBe("GET /");
+      expect(result.evidence[1]!.label).toBe(
+        "GET /.well-known/oauth-protected-resource",
       );
-      expect(sawHomepage).toBe(true);
+      expect(result.evidence[2]!.action).toBe("conclude");
+
       expect(calls).toEqual(
         expect.arrayContaining([
+          `${origin}/`,
           `${origin}/.well-known/oauth-protected-resource`,
         ]),
       );
-
-      const last = result.evidence[result.evidence.length - 1]!;
-      expect(last.action).toBe("conclude");
-      expect(last.label).toBe("Conclusion");
     });
   }
 });
@@ -203,5 +177,29 @@ describe("checkOauthProtectedResource — edge cases", () => {
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkOauthProtectedResource(ctx);
     expect(result.status).toBe("fail");
+  });
+
+  it("preserves dispatch order (homepage, then well-known) even when well-known resolves first", async () => {
+    // Delay homepage so well-known resolves first; evidence must still reflect
+    // dispatch order (homepage at index 0).
+    const fetchImpl: typeof fetch = async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url === "https://example.com/") {
+        await new Promise((r) => setTimeout(r, 20));
+        return new Response("", { status: 200 });
+      }
+      return new Response("", { status: 404 });
+    };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkOauthProtectedResource(ctx);
+    expect(result.evidence[0]!.label).toBe("GET /");
+    expect(result.evidence[1]!.label).toBe(
+      "GET /.well-known/oauth-protected-resource",
+    );
   });
 });

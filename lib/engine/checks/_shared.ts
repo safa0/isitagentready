@@ -15,6 +15,20 @@ import {
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
 
 /**
+ * Best-effort JSON parse — returns `undefined` on empty input or parse error.
+ * Lifted here from the per-check duplicates so every JSON-probing check
+ * shares a single implementation.
+ */
+export function tryParseJson(body: string | undefined): unknown | undefined {
+  if (body === undefined || body.length === 0) return undefined;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Canonical (lowercase) list of AI crawler user-agent tokens probed for in
  * robots.txt User-agent lines. Exported so sibling checks can reuse the same
  * set without redeclaring it. Frozen `as const` to make the intent

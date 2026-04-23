@@ -20,76 +20,36 @@ import { describe, expect, it } from "vitest";
 
 import {
   ALL_SITES,
-  loadOracle,
+  expectCheckMatchesOracle,
   makeFetchStub,
-  type OracleSite,
-  type StubHandler,
+  runCheckAgainstOracle,
+  type OracleCheckLike,
 } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
 
-// Not-yet-implemented (module should not resolve until GREEN phase).
 import { checkWebBotAuth } from "@/lib/engine/checks/web-bot-auth";
 
 // ---------------------------------------------------------------------------
 // Oracle round-trip
 // ---------------------------------------------------------------------------
 
-function getOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return oracle.raw.checks.botAccessControl.webBotAuth as any;
-}
-
-async function runAgainstOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
-  const check = getOracle(site);
-
-  const routes: Record<string, StubHandler> = {};
-  for (const step of check.evidence) {
-    if (step.action !== "fetch" || !step.request || !step.response) continue;
-    routes[step.request.url] = {
-      status: step.response.status,
-      statusText: step.response.statusText,
-      headers: step.response.headers ?? {},
-      body: step.response.bodyPreview ?? "",
-    };
-  }
-
-  const stub = makeFetchStub(routes);
-  const ctx = createScanContext({
-    url: oracle.url,
-    fetchImpl: stub.fetchImpl,
-  });
-  const result = await checkWebBotAuth(ctx);
-  return { result, oracle: check, calls: stub.calls };
+function getOracleEntry(raw: unknown): OracleCheckLike {
+  return (raw as { checks: { botAccessControl: { webBotAuth: OracleCheckLike } } })
+    .checks.botAccessControl.webBotAuth;
 }
 
 describe("checkWebBotAuth — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle } = await runAgainstOracle(site);
+      const { result, oracle } = await runCheckAgainstOracle({
+        site,
+        getOracleEntry,
+        runCheck: checkWebBotAuth,
+      });
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
-
-      expect(result.status).toBe(oracle.status);
-      expect(result.message).toBe(oracle.message);
-      expect(result.evidence).toHaveLength(oracle.evidence.length);
-
-      for (let i = 0; i < oracle.evidence.length; i++) {
-        const want = oracle.evidence[i];
-        const got = result.evidence[i]!;
-        expect(got.action, `evidence[${i}].action`).toBe(want.action);
-        expect(got.label, `evidence[${i}].label`).toBe(want.label);
-        // Oracle may omit the `finding` field on neutral fetch steps
-        // (shopify fixture); our implementation always emits one. Only
-        // assert parity when the oracle recorded a finding.
-        if (want.finding !== undefined) {
-          expect(got.finding.outcome, `evidence[${i}].finding.outcome`).toBe(
-            want.finding.outcome,
-          );
-        }
-      }
+      expectCheckMatchesOracle(result, oracle);
     });
   }
 });

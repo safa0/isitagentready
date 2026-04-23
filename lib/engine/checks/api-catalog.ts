@@ -8,6 +8,14 @@
  * - Pass criterion: 200 response + `application/linkset+json` content type
  *   + non-empty `linkset[]` array in the body.
  *
+ * Divergence from the full RFC 9727 flow
+ * --------------------------------------
+ * RFC 9727 also allows advertising the catalog via a homepage `Link` header
+ * (`rel="api-catalog"`) or a `/llms.txt` reference. The current oracle
+ * fixtures only exercise the well-known probe, so this check intentionally
+ * implements only that path. Expanding to Link-header / llms.txt probing is
+ * deferred until we have real pass fixtures to ground-truth against.
+ *
  * Evidence timeline
  * -----------------
  * Fail path (all 5 oracle fixtures): `fetch → conclude`.
@@ -20,6 +28,7 @@ import {
   makeStep,
   type ScanContext,
 } from "@/lib/engine/context";
+import { tryParseJson } from "./_shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,15 +47,6 @@ const FAIL_MESSAGE = "API Catalog not found";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function tryParseJson(body: string | undefined): unknown | undefined {
-  if (body === undefined || body.length === 0) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
 
 function isLinksetJson(contentType: string | undefined): boolean {
   if (contentType === undefined) return false;

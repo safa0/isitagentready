@@ -11,17 +11,20 @@
  *
  * Oracle observations across 5 fixtures (all 5 fail):
  *   - 4 evidence steps: 3 fetches + conclude.
- *   - Emission order varies per fixture; tests only assert the set of labels.
+ *   - Emission order varies per fixture (captures live resolution order). Our
+ *     implementation now emits evidence in fixed DISPATCH order (CANDIDATES
+ *     index), so we compare by label (order-independent for non-terminal
+ *     steps) and still assert the conclusion is last.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
   ALL_SITES,
-  loadOracle,
+  expectCheckMatchesOracle,
   makeFetchStub,
-  type OracleSite,
-  type StubHandler,
+  runCheckAgainstOracle,
+  type OracleCheckLike,
 } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
@@ -32,11 +35,16 @@ import { checkMcpServerCard } from "@/lib/engine/checks/mcp-server-card";
 // Oracle round-trip
 // ---------------------------------------------------------------------------
 
-function getOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return oracle.raw.checks.discovery.mcpServerCard as any;
+function getOracleEntry(raw: unknown): OracleCheckLike {
+  return (raw as { checks: { discovery: { mcpServerCard: OracleCheckLike } } })
+    .checks.discovery.mcpServerCard;
 }
+
+const DISPATCH_ORDER = [
+  "GET /.well-known/mcp/server-card.json",
+  "GET /.well-known/mcp/server-cards.json",
+  "GET /.well-known/mcp.json",
+] as const;
 
 const CANDIDATE_PATHS = [
   "/.well-known/mcp/server-card.json",
@@ -44,59 +52,30 @@ const CANDIDATE_PATHS = [
   "/.well-known/mcp.json",
 ] as const;
 
-async function runAgainstOracle(site: OracleSite) {
-  const loaded = loadOracle(site);
-  const check = getOracle(site);
-
-  const routes: Record<string, StubHandler> = {};
-  for (const step of check.evidence) {
-    if (step.action !== "fetch" || !step.request || !step.response) continue;
-    routes[step.request.url] = {
-      status: step.response.status,
-      statusText: step.response.statusText,
-      headers: step.response.headers ?? {},
-      body: step.response.bodyPreview ?? "",
-    };
-  }
-
-  const stub = makeFetchStub(routes);
-  const ctx = createScanContext({
-    url: loaded.url,
-    fetchImpl: stub.fetchImpl,
-  });
-  const result = await checkMcpServerCard(ctx);
-  return { result, oracle: check, origin: loaded.origin, calls: stub.calls };
-}
-
 describe("checkMcpServerCard — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle, origin, calls } = await runAgainstOracle(site);
+      const { result, oracle, origin, calls } = await runCheckAgainstOracle({
+        site,
+        getOracleEntry,
+        runCheck: checkMcpServerCard,
+      });
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
-
-      expect(result.status).toBe(oracle.status);
-      expect(result.message).toBe(oracle.message);
-      expect(result.evidence).toHaveLength(oracle.evidence.length);
+      expectCheckMatchesOracle(result, oracle, { evidenceOrder: "by-label" });
 
       // Every candidate path must be probed.
       for (const path of CANDIDATE_PATHS) {
         expect(calls).toEqual(expect.arrayContaining([`${origin}${path}`]));
       }
 
-      // Terminal step is Conclusion.
-      const last = result.evidence[result.evidence.length - 1]!;
-      expect(last.action).toBe("conclude");
-      expect(last.label).toBe("Conclusion");
-      expect(last.finding.outcome).toBe(
-        oracle.evidence[oracle.evidence.length - 1].finding.outcome,
+      // Dispatch order is deterministic.
+      for (let i = 0; i < DISPATCH_ORDER.length; i++) {
+        expect(result.evidence[i]!.label).toBe(DISPATCH_ORDER[i]);
+      }
+      expect(result.evidence[result.evidence.length - 1]!.action).toBe(
+        "conclude",
       );
-
-      // Label set (order-independent) matches oracle.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const oracleLabels = oracle.evidence.map((s: any) => s.label).sort();
-      const actualLabels = result.evidence.map((s) => s.label).sort();
-      expect(actualLabels).toEqual(oracleLabels);
     });
   }
 });
@@ -230,5 +209,26 @@ describe("checkMcpServerCard — edge cases", () => {
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkMcpServerCard(ctx);
     expect(result.status).toBe("fail");
+  });
+
+  it("preserves dispatch order regardless of resolution timing", async () => {
+    // Delay server-card.json so server-cards.json and mcp.json resolve first.
+    const fetchImpl: typeof fetch = async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.endsWith("/server-card.json")) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return new Response("", { status: 404 });
+    };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkMcpServerCard(ctx);
+    for (let i = 0; i < DISPATCH_ORDER.length; i++) {
+      expect(result.evidence[i]!.label).toBe(DISPATCH_ORDER[i]);
+    }
   });
 });

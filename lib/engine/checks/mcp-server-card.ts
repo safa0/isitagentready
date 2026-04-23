@@ -15,9 +15,13 @@
  *
  * Evidence timeline
  * -----------------
- * Three fetches (in concurrent resolution order) + conclusion. When a
- * candidate responds with a valid card, an additional `validate` step is
- * emitted before the conclusion.
+ * Three fetches (emitted in fixed dispatch order — CANDIDATES index — not
+ * resolution order) + conclusion. When a candidate responds with a valid card,
+ * an additional `validate` step is emitted before the conclusion.
+ *
+ * Step budget:
+ *   - Pass path: 5 steps  (3 × fetch + validate + conclude)
+ *   - Fail path: 4 steps  (3 × fetch + conclude)
  */
 
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
@@ -27,6 +31,7 @@ import {
   type FetchOutcome,
   type ScanContext,
 } from "@/lib/engine/context";
+import { tryParseJson } from "./_shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,15 +68,6 @@ const FAIL_CONCLUDE_SUMMARY = "MCP Server Card not found at any candidate path";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function tryParseJson(body: string | undefined): unknown | undefined {
-  if (body === undefined || body.length === 0) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
-
 interface ValidCard {
   readonly name: string;
   readonly version: string;
@@ -97,19 +93,17 @@ function validateServerCard(json: unknown): ValidCard | undefined {
 
   // Shape 2: { serverInfo: { name, version }, endpoint }
   const info = obj.serverInfo;
+  if (info === null || typeof info !== "object") return undefined;
+  const si = info as Record<string, unknown>;
+  const siName = si.name;
+  const siVersion = si.version;
+  const endpoint = obj.endpoint;
   if (
-    info !== null &&
-    typeof info === "object" &&
-    typeof (info as Record<string, unknown>).name === "string" &&
-    typeof (info as Record<string, unknown>).version === "string" &&
-    typeof obj.endpoint === "string"
+    typeof siName === "string" &&
+    typeof siVersion === "string" &&
+    typeof endpoint === "string"
   ) {
-    const si = info as Record<string, unknown>;
-    return {
-      name: si.name as string,
-      version: si.version as string,
-      endpoint: obj.endpoint,
-    };
+    return { name: siName, version: siVersion, endpoint };
   }
 
   return undefined;
@@ -183,12 +177,10 @@ export async function checkMcpServerCard(
 ): Promise<CheckResult> {
   const started = Date.now();
 
-  const probes = CANDIDATES.map((c) => probe(ctx, c));
-  const results: ProbeResult[] = [];
-  await Promise.all(
-    probes.map(async (p) => {
-      results.push(await p);
-    }),
+  // Dispatch-order-deterministic emission: results land at the same index
+  // as their candidate in CANDIDATES, regardless of which probe resolves first.
+  const results: readonly ProbeResult[] = await Promise.all(
+    CANDIDATES.map((c) => probe(ctx, c)),
   );
 
   const evidence: EvidenceStep[] = [];

@@ -14,9 +14,13 @@
  * Evidence timeline
  * -----------------
  * For each endpoint: `fetch` step; if 200 JSON, a `validate` step also.
- * Terminal step is always a single `conclude`. Concurrent probes mean
- * ordering is non-deterministic — we emit the two probes' steps in the order
- * their fetch promises resolve, then append the conclusion.
+ * Terminal step is always a single `conclude`. Concurrent probes emit their
+ * evidence in fixed dispatch order (ENDPOINTS index), not resolution order —
+ * the result is deterministic for any caller that iterates evidence.
+ *
+ * Step budget:
+ *   - Pass (OIDC): up to 5 steps  (2 × fetch + 2 × validate + conclude)
+ *   - Fail:        3 steps        (2 × fetch + conclude)
  */
 
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
@@ -26,6 +30,7 @@ import {
   type FetchOutcome,
   type ScanContext,
 } from "@/lib/engine/context";
+import { tryParseJson } from "./_shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -67,15 +72,6 @@ const FAIL_CONCLUDE_SUMMARY =
 // Helpers
 // ---------------------------------------------------------------------------
 
-function tryParseJson(body: string | undefined): unknown | undefined {
-  if (body === undefined || body.length === 0) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
-
 interface ValidatedMetadata {
   readonly issuer: string;
   readonly hasAuthorizationEndpoint: boolean;
@@ -94,7 +90,7 @@ function validateMetadata(json: unknown): ValidatedMetadata | undefined {
       : undefined;
   if (issuer === undefined || authz === undefined) return undefined;
   const grantTypes = Array.isArray(obj.grant_types_supported)
-    ? (obj.grant_types_supported.filter((v) => typeof v === "string") as string[])
+    ? obj.grant_types_supported.filter((v): v is string => typeof v === "string")
     : undefined;
   return {
     issuer,
@@ -196,17 +192,11 @@ export async function checkOauthDiscovery(
 ): Promise<CheckResult> {
   const started = Date.now();
 
-  // Probe both endpoints concurrently; emit evidence in resolution order.
-  const probes: Promise<ProbeResult>[] = ENDPOINTS.map((e) => probe(ctx, e));
-  const results: ProbeResult[] = [];
-  // We emit in resolution order using Promise.allSettled then sorting by start
-  // index would lose the concurrent ordering behaviour. Instead race each to
-  // completion in any order via a small helper:
-  await Promise.all(
-    probes.map(async (p) => {
-      const r = await p;
-      results.push(r);
-    }),
+  // Probe both endpoints concurrently; emit evidence in fixed dispatch order
+  // (ENDPOINTS index) so evidence is deterministic regardless of which probe
+  // resolves first.
+  const results: readonly ProbeResult[] = await Promise.all(
+    ENDPOINTS.map((e) => probe(ctx, e)),
   );
 
   const evidence: EvidenceStep[] = [];

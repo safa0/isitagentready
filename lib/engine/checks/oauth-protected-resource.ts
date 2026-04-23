@@ -10,9 +10,13 @@
  *
  * Evidence timeline
  * -----------------
- * Three steps: homepage fetch, well-known fetch, conclusion. The two fetches
- * run concurrently; emission order follows resolution order (oracle fixtures
- * show both orderings).
+ * Both probes run concurrently but we emit their evidence in a fixed dispatch
+ * order (homepage first, well-known second) regardless of resolution timing —
+ * that keeps the output deterministic for any caller that iterates evidence.
+ *
+ * Step budget:
+ *   - Pass path:  3 steps  (homepage fetch, well-known fetch, conclude)
+ *   - Fail path:  3 steps  (homepage fetch, well-known fetch, conclude)
  */
 
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
@@ -21,8 +25,8 @@ import {
   makeStep,
   type FetchOutcome,
   type ScanContext,
-  type FetchRequestRecord,
 } from "@/lib/engine/context";
+import { tryParseJson } from "./_shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,15 +43,6 @@ const FAIL_MESSAGE = "No OAuth Protected Resource Metadata found";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function tryParseJson(body: string | undefined): unknown | undefined {
-  if (body === undefined || body.length === 0) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
 
 interface HomepageFinding {
   readonly summary: string;
@@ -80,8 +75,7 @@ interface WellKnownFinding {
   readonly summary: string;
   readonly outcome: "positive" | "negative";
   readonly resource?: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  readonly metadata?: Record<string, any>;
+  readonly metadata?: Record<string, unknown>;
 }
 
 function analyseWellKnown(outcome: FetchOutcome): WellKnownFinding {
@@ -128,16 +122,24 @@ export async function checkOauthProtectedResource(
 ): Promise<CheckResult> {
   const started = Date.now();
 
-  type Tagged =
-    | { kind: "homepage"; outcome: FetchOutcome; finding: HomepageFinding }
-    | { kind: "well-known"; outcome: FetchOutcome; finding: WellKnownFinding };
+  interface HomepageProbe {
+    readonly kind: "homepage";
+    readonly outcome: FetchOutcome;
+    readonly finding: HomepageFinding;
+  }
+  interface WellKnownProbe {
+    readonly kind: "well-known";
+    readonly outcome: FetchOutcome;
+    readonly finding: WellKnownFinding;
+  }
+  type Probe = HomepageProbe | WellKnownProbe;
 
-  const homepageP: Promise<Tagged> = ctx.getHomepage().then((outcome) => ({
+  const homepageP: Promise<Probe> = ctx.getHomepage().then((outcome) => ({
     kind: "homepage" as const,
     outcome,
     finding: analyseHomepage(outcome),
   }));
-  const wellKnownP: Promise<Tagged> = ctx.fetch(WELL_KNOWN_PATH).then(
+  const wellKnownP: Promise<Probe> = ctx.fetch(WELL_KNOWN_PATH).then(
     (outcome) => ({
       kind: "well-known" as const,
       outcome,
@@ -145,26 +147,17 @@ export async function checkOauthProtectedResource(
     }),
   );
 
-  const collected: Tagged[] = [];
-  await Promise.all(
-    [homepageP, wellKnownP].map(async (p) => {
-      collected.push(await p);
-    }),
-  );
+  // Collect index-aligned so evidence emission follows dispatch order, not
+  // resolution order. Immutable (no `.push` onto a freshly allocated array).
+  const results: readonly Probe[] = await Promise.all([homepageP, wellKnownP]);
 
   const evidence: EvidenceStep[] = [];
-  let wellKnown: Extract<Tagged, { kind: "well-known" }> | undefined;
+  let wellKnown: WellKnownProbe | undefined;
 
-  for (const item of collected) {
+  for (const item of results) {
     if (item.kind === "homepage") {
-      // The homepage probe request URL should match the oracle: origin without
-      // trailing slash. Rebuild the request record accordingly.
-      const rewritten: FetchOutcome = {
-        ...item.outcome,
-        request: rewriteHomepageRequest(item.outcome.request, ctx.origin),
-      };
       evidence.push(
-        fetchToStep(rewritten, HOMEPAGE_FETCH_LABEL, {
+        fetchToStep(item.outcome, HOMEPAGE_FETCH_LABEL, {
           outcome: item.finding.outcome,
           summary: item.finding.summary,
         }),
@@ -208,20 +201,4 @@ export async function checkOauthProtectedResource(
     evidence,
     durationMs: Date.now() - started,
   };
-}
-
-/**
- * Oracle records the homepage fetch URL as the origin without trailing slash
- * (e.g. `https://example.com`, not `https://example.com/`). The scan context
- * always resolves `/` to `origin/`, so we rewrite the request record to
- * match the expected shape on this specific check.
- */
-function rewriteHomepageRequest(
-  request: FetchRequestRecord,
-  origin: string,
-): FetchRequestRecord {
-  if (request.url === `${origin}/`) {
-    return { ...request, url: origin };
-  }
-  return request;
 }

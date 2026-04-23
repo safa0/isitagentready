@@ -24,6 +24,7 @@ import {
   makeStep,
   type ScanContext,
 } from "@/lib/engine/context";
+import { tryParseJson } from "./_shared";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,15 +47,6 @@ const MESSAGE_VALID =
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function tryParseJson(body: string | undefined): unknown | undefined {
-  if (body === undefined || body.length === 0) return undefined;
-  try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
-  }
-}
 
 function hasNonEmptyKeysArray(json: unknown): boolean {
   if (json === null || typeof json !== "object") return false;

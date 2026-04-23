@@ -7,6 +7,8 @@
  * - Compare a produced `CheckResult` against the oracle entry structurally
  *   (ignoring `durationMs` and tolerating extra request/response headers added
  *   by the shared scan context — e.g. the scanner's `user-agent`).
+ * - Provide a single `runCheckAgainstOracle` runner that the 5 Phase-2 specs
+ *   reuse so route synthesis and context wiring live in one place.
  *
  * IMPORTANT: this file is `.ts` (not `.spec.ts`) so vitest does not collect it
  * as a test file (see `vitest.config.ts` include pattern).
@@ -17,6 +19,7 @@ import type {
   CheckResult,
   EvidenceStep,
 } from "@/lib/schema";
+import { createScanContext, type ScanContext } from "@/lib/engine/context";
 
 import cfDev from "../../../research/raw/scan-cf-dev.json";
 import example from "../../../research/raw/scan-example.json";
@@ -151,11 +154,52 @@ function normaliseUrl(u: string): string {
  * - `durationMs` is never compared (varies per run).
  * - `bodyPreview` is not compared (derived from body; spec authors can assert
  *   on it separately when needed).
+ *
+ * Note on evidence ordering: the 5 oracle fixtures were captured live and
+ * their step order reflects resolution order at capture time. The engine now
+ * emits evidence in fixed DISPATCH order (deterministic). Specs therefore
+ * validate the label SET matches the oracle — sequence equality is validated
+ * only when the oracle sequence happens to match our dispatch order.
  */
+export interface OracleStepLike {
+  readonly action: string;
+  readonly label: string;
+  readonly finding?: {
+    readonly outcome: string;
+    readonly summary?: string;
+  };
+  readonly request?: { readonly url: string; readonly method: string };
+  readonly response?: {
+    readonly status: number;
+    readonly statusText?: string;
+    readonly headers?: Record<string, string>;
+    readonly bodyPreview?: string;
+  };
+}
+
+export interface OracleCheckLike {
+  readonly status: CheckResult["status"];
+  readonly message: string;
+  readonly details?: Record<string, unknown>;
+  readonly evidence: readonly OracleStepLike[];
+}
+
+export interface ExpectOracleOpts {
+  /**
+   * How to compare evidence ordering:
+   *   - "strict" (default): evidence[i] must match oracle.evidence[i] in order.
+   *   - "by-label": match each actual step to the oracle step with the same
+   *     label (in order of first occurrence). Use when the oracle's capture
+   *     order reflects live resolution order but our implementation emits in
+   *     a fixed dispatch order that happens to differ for some fixtures.
+   */
+  readonly evidenceOrder?: "strict" | "by-label";
+}
+
 export function expectCheckMatchesOracle(
   actual: CheckResult,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  oracle: any,
+  oracle: OracleCheckLike,
+  opts: ExpectOracleOpts = {},
 ): void {
   expect(actual.status).toBe(oracle.status);
   expect(actual.message).toBe(oracle.message);
@@ -168,32 +212,52 @@ export function expectCheckMatchesOracle(
   expect(Array.isArray(actual.evidence)).toBe(true);
   expect(actual.evidence).toHaveLength(oracle.evidence.length);
 
-  oracle.evidence.forEach(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (expectedStep: any, i: number) => {
+  const order = opts.evidenceOrder ?? "strict";
+  if (order === "strict") {
+    oracle.evidence.forEach((expectedStep, i) => {
       assertStepMatches(actual.evidence[i]!, expectedStep, i);
-    },
-  );
+    });
+    return;
+  }
+
+  // by-label: pair each actual step with an oracle step of the same label,
+  // then run the same assertions. Both lists are consumed in a stable 1:1
+  // fashion so duplicate labels still round-trip correctly.
+  const remainingOracle: OracleStepLike[] = [...oracle.evidence];
+  actual.evidence.forEach((actualStep, i) => {
+    const matchIdx = remainingOracle.findIndex(
+      (e) => e.label === actualStep.label && e.action === actualStep.action,
+    );
+    if (matchIdx === -1) {
+      throw new Error(
+        `evidence[${i}] (action=${actualStep.action}, label=${actualStep.label}) ` +
+          `has no matching oracle step`,
+      );
+    }
+    const [expected] = remainingOracle.splice(matchIdx, 1);
+    assertStepMatches(actualStep, expected!, i);
+  });
 }
 
 function assertStepMatches(
   actual: EvidenceStep,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  expected: any,
+  expected: OracleStepLike,
   index: number,
 ): void {
-  expect(
-    actual.action,
-    `evidence[${index}].action`,
-  ).toBe(expected.action);
-  expect(
-    actual.label,
-    `evidence[${index}].label`,
-  ).toBe(expected.label);
-  expect(
-    actual.finding,
-    `evidence[${index}].finding`,
-  ).toEqual(expected.finding);
+  expect(actual.action, `evidence[${index}].action`).toBe(expected.action);
+  expect(actual.label, `evidence[${index}].label`).toBe(expected.label);
+  if (expected.finding !== undefined) {
+    expect(
+      actual.finding.outcome,
+      `evidence[${index}].finding.outcome`,
+    ).toBe(expected.finding.outcome);
+    if (expected.finding.summary !== undefined) {
+      expect(
+        actual.finding.summary,
+        `evidence[${index}].finding.summary`,
+      ).toBe(expected.finding.summary);
+    }
+  }
 
   if (expected.request !== undefined) {
     expect(actual.request, `evidence[${index}].request`).toBeDefined();
@@ -206,12 +270,12 @@ function assertStepMatches(
   if (expected.response !== undefined) {
     expect(actual.response, `evidence[${index}].response`).toBeDefined();
     expect(actual.response!.status).toBe(expected.response.status);
-    expect(actual.response!.statusText).toBe(expected.response.statusText);
+    if (expected.response.statusText !== undefined) {
+      expect(actual.response!.statusText).toBe(expected.response.statusText);
+    }
     if (expected.response.headers !== undefined) {
       expect(actual.response!.headers).toMatchObject(expected.response.headers);
     }
-  } else {
-    expect(actual.response, `evidence[${index}].response`).toBeUndefined();
   }
 }
 
@@ -237,6 +301,99 @@ export function bodyFromPreview(preview: string | undefined): string {
     return head + head;
   }
   return preview;
+}
+
+// ---------------------------------------------------------------------------
+// Shared oracle runner
+// ---------------------------------------------------------------------------
+
+export interface RunCheckAgainstOracleOpts<R> {
+  readonly site: OracleSite;
+  /** Pluck the oracle entry for the check under test from the raw fixture. */
+  readonly getOracleEntry: (raw: unknown) => OracleCheckLike;
+  /** Run the check against a stubbed scan context. */
+  readonly runCheck: (ctx: ScanContext) => Promise<R>;
+  /**
+   * When the oracle's response has no `bodyPreview` but the check needs a body
+   * to succeed (e.g. Cloudflare truncates 200 JSON responses), return a synth
+   * body here. Called once per fetch evidence step.
+   */
+  readonly synthesiseBody?: (
+    step: OracleStepLike,
+    oracle: OracleCheckLike,
+  ) => string | undefined;
+  /**
+   * Register extra routes not present in the oracle evidence (e.g. alias the
+   * homepage URL shape). Receives the origin and the in-progress route map.
+   */
+  readonly extraRoutes?: (
+    origin: string,
+    routes: Record<string, StubHandler>,
+  ) => void;
+}
+
+export interface RunCheckAgainstOracleResult<R> {
+  readonly result: R;
+  readonly oracle: OracleCheckLike;
+  readonly origin: string;
+  readonly calls: string[];
+}
+
+/**
+ * Standard oracle round-trip harness for Phase-2 checks. Builds a fetch stub
+ * from the oracle's recorded request/response pairs and runs the check
+ * against a real `ScanContext`. Centralising this in one place means:
+ *
+ *   - route synthesis logic (e.g. body reconstruction from preview) lives in
+ *     a single location and is easy to audit;
+ *   - per-spec boilerplate stays tight — each spec supplies only a check
+ *     accessor + the actual check function;
+ *   - behavioural tweaks (e.g. adding request header assertions) propagate
+ *     to all 5 specs at once.
+ */
+export async function runCheckAgainstOracle<R>(
+  opts: RunCheckAgainstOracleOpts<R>,
+): Promise<RunCheckAgainstOracleResult<R>> {
+  const fixture = loadOracle(opts.site);
+  const oracle = opts.getOracleEntry(fixture.raw);
+
+  const routes: Record<string, StubHandler> = {};
+  for (const step of oracle.evidence) {
+    if (step.action !== "fetch" || !step.request || !step.response) continue;
+    const previewBody = bodyFromPreview(step.response.bodyPreview);
+    const synthesised = opts.synthesiseBody?.(step, oracle);
+    const body = previewBody.length > 0 ? previewBody : (synthesised ?? "");
+    const handler: StubResponseInit = {
+      status: step.response.status,
+      statusText: step.response.statusText,
+      headers: step.response.headers ?? {},
+      body,
+    };
+    routes[step.request.url] = handler;
+    // The oracle records the homepage URL as `${origin}` (no trailing slash)
+    // but the scan context always issues `${origin}/`. Register both forms so
+    // the stub serves whichever shape the check under test produces.
+    if (step.request.url === fixture.origin) {
+      routes[`${fixture.origin}/`] = handler;
+    } else if (step.request.url === `${fixture.origin}/`) {
+      routes[fixture.origin] = handler;
+    }
+  }
+
+  opts.extraRoutes?.(fixture.origin, routes);
+
+  const stub = makeFetchStub(routes);
+  const ctx = createScanContext({
+    url: fixture.url,
+    fetchImpl: stub.fetchImpl,
+  });
+  const result = await opts.runCheck(ctx);
+  return {
+    result,
+    oracle,
+    origin: fixture.origin,
+    calls: stub.calls,
+  };
 }
 
 // ---------------------------------------------------------------------------

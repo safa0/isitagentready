@@ -12,20 +12,23 @@
  *   - cf-dev / cf / example / shopify: both 404 → status "fail", 3 steps
  *     (fetch + fetch + conclude).
  *
- * Oracle evidence ordering varies across fixtures (some probe oauth-auth-server
- * first, others probe openid-configuration first). We normalise by checking
- * the set of labels rather than sequence, while still asserting length and
- * finding outcomes.
+ * SYNTHESISED BODY (vercel) — the vercel oracle preserves response headers
+ * but not `bodyPreview` for its OAuth/OIDC metadata endpoints. We reconstruct
+ * a minimal valid payload from the oracle's own `details` fields so the
+ * validator accepts it; one edge case below also feeds a captured real-world
+ * Vercel payload through the check to assert full `details` parity without
+ * synthesis.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
   ALL_SITES,
-  loadOracle,
+  expectCheckMatchesOracle,
   makeFetchStub,
-  type OracleSite,
-  type StubHandler,
+  runCheckAgainstOracle,
+  type OracleCheckLike,
+  type OracleStepLike,
 } from "./_helpers/oracle";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
@@ -36,69 +39,57 @@ import { checkOauthDiscovery } from "@/lib/engine/checks/oauth-discovery";
 // Oracle round-trip
 // ---------------------------------------------------------------------------
 
-function getOracle(site: OracleSite) {
-  const oracle = loadOracle(site);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return oracle.raw.checks.discovery.oauthDiscovery as any;
+function getOracleEntry(raw: unknown): OracleCheckLike {
+  return (raw as { checks: { discovery: { oauthDiscovery: OracleCheckLike } } })
+    .checks.discovery.oauthDiscovery;
 }
 
-async function runAgainstOracle(site: OracleSite) {
-  const loaded = loadOracle(site);
-  const check = getOracle(site);
-
-  const routes: Record<string, StubHandler> = {};
-  for (const step of check.evidence) {
-    if (step.action !== "fetch" || !step.request || !step.response) continue;
-    // When the oracle advertises a 200 JSON response but did not preserve the
-    // body (Cloudflare often truncates these out), synthesize a minimal valid
-    // OAuth/OIDC metadata document that also carries the oracle's declared
-    // `issuer` and other `details` fields so the validator passes.
-    let body = step.response.bodyPreview ?? "";
-    const contentType = (step.response.headers?.["content-type"] ?? "").toLowerCase();
-    if (
-      step.response.status === 200 &&
-      contentType.includes("application/json") &&
-      body === ""
-    ) {
-      body = JSON.stringify({
-        issuer: check.details?.issuer ?? loaded.origin,
-        authorization_endpoint: `${loaded.origin}/oauth/authorize`,
-        token_endpoint: `${loaded.origin}/oauth/token`,
-        jwks_uri: `${loaded.origin}/.well-known/jwks`,
-        ...(Array.isArray(check.details?.grantTypes)
-          ? { grant_types_supported: check.details.grantTypes }
-          : {}),
-      });
-    }
-    routes[step.request.url] = {
-      status: step.response.status,
-      statusText: step.response.statusText,
-      headers: step.response.headers ?? {},
-      body,
-    };
+function synthesiseBody(
+  step: OracleStepLike,
+  oracle: OracleCheckLike,
+): string | undefined {
+  if (step.response === undefined) return undefined;
+  const ct = (step.response.headers?.["content-type"] ?? "").toLowerCase();
+  if (step.response.status !== 200 || !ct.includes("application/json")) {
+    return undefined;
   }
-
-  const stub = makeFetchStub(routes);
-  const ctx = createScanContext({
-    url: loaded.url,
-    fetchImpl: stub.fetchImpl,
+  // Reconstruct JSON whose `validateMetadata` output matches the oracle's
+  // recorded `details`. Without this the Cloudflare-truncated 200 responses
+  // would fail validation during the round-trip.
+  const details = oracle.details ?? {};
+  const issuer =
+    typeof details.issuer === "string"
+      ? details.issuer
+      : new URL(step.request!.url).origin;
+  const grantTypes = Array.isArray(details.grantTypes)
+    ? details.grantTypes
+    : undefined;
+  return JSON.stringify({
+    issuer,
+    authorization_endpoint: `${issuer}/oauth/authorize`,
+    token_endpoint: `${issuer}/oauth/token`,
+    jwks_uri: `${issuer}/.well-known/jwks`,
+    ...(grantTypes !== undefined ? { grant_types_supported: grantTypes } : {}),
   });
-  const result = await checkOauthDiscovery(ctx);
-  return { result, oracle: check, origin: loaded.origin, calls: stub.calls };
 }
 
 describe("checkOauthDiscovery — oracle fixtures", () => {
   for (const site of ALL_SITES) {
     it(`matches the ${site} oracle`, async () => {
-      const { result, oracle, origin, calls } = await runAgainstOracle(site);
+      const { result, oracle, origin, calls } = await runCheckAgainstOracle({
+        site,
+        getOracleEntry,
+        runCheck: checkOauthDiscovery,
+        synthesiseBody,
+      });
 
       expect(() => CheckResultSchema.parse(result)).not.toThrow();
+      // Dispatch order differs from oracle capture order on some fixtures
+      // (vercel captured OIDC first; we dispatch oauth-authorization-server
+      // first). Compare by label so the assertion is order-agnostic.
+      expectCheckMatchesOracle(result, oracle, { evidenceOrder: "by-label" });
 
-      expect(result.status).toBe(oracle.status);
-      expect(result.message).toBe(oracle.message);
-      expect(result.evidence).toHaveLength(oracle.evidence.length);
-
-      // Both well-known paths must always be probed regardless of order.
+      // Both well-known paths must always be probed.
       expect(calls).toEqual(
         expect.arrayContaining([
           `${origin}/.well-known/oauth-authorization-server`,
@@ -106,20 +97,26 @@ describe("checkOauthDiscovery — oracle fixtures", () => {
         ]),
       );
 
-      // Terminal step is the Conclusion.
-      const last = result.evidence[result.evidence.length - 1]!;
-      expect(last.action).toBe("conclude");
-      expect(last.label).toBe("Conclusion");
-      expect(last.finding.outcome).toBe(
-        oracle.evidence[oracle.evidence.length - 1].finding.outcome,
+      // Dispatch order is deterministic: oauth-authorization-server first.
+      expect(result.evidence[0]!.label).toBe(
+        "GET /.well-known/oauth-authorization-server",
+      );
+      expect(result.evidence[result.evidence.length - 1]!.action).toBe(
+        "conclude",
       );
 
-      // The set of labels should match the oracle's set (order-independent).
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const oracleLabels = oracle.evidence.map((s: any) => s.label).sort();
-      const actualLabels = result.evidence.map((s) => s.label).sort();
-      expect(actualLabels).toEqual(oracleLabels);
-
+      // Per-fixture details parity (when the oracle has them).
+      if (oracle.details?.grantTypes !== undefined) {
+        expect(result.details?.grantTypes).toEqual(oracle.details.grantTypes);
+      }
+      if (oracle.details?.hasTokenEndpoint !== undefined) {
+        expect(result.details?.hasTokenEndpoint).toBe(
+          oracle.details.hasTokenEndpoint,
+        );
+      }
+      if (oracle.details?.hasJwksUri !== undefined) {
+        expect(result.details?.hasJwksUri).toBe(oracle.details.hasJwksUri);
+      }
       if (oracle.details?.source !== undefined) {
         expect(result.details?.source).toBe(oracle.details.source);
       }
@@ -136,7 +133,80 @@ describe("checkOauthDiscovery — oracle fixtures", () => {
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
+/**
+ * Real-world Vercel OpenID Connect metadata captured via
+ *   `curl -s https://vercel.com/.well-known/openid-configuration`
+ * in April 2026. Kept here (not in the shared fixture) to avoid cross-worktree
+ * churn, while still feeding the check a non-synthesised payload end-to-end.
+ */
+const VERCEL_OIDC_BODY = JSON.stringify({
+  issuer: "https://vercel.com",
+  jwks_uri: "https://vercel.com/.well-known/jwks",
+  authorization_endpoint: "https://vercel.com/oauth/authorize",
+  token_endpoint: "https://api.vercel.com/login/oauth/token",
+  userinfo_endpoint: "https://api.vercel.com/login/oauth/userinfo",
+  grant_types_supported: [
+    "authorization_code",
+    "client_credentials",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:device_code",
+  ],
+});
+
 describe("checkOauthDiscovery — edge cases", () => {
+  it("asserts full details parity when fed a real Vercel OIDC payload", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://vercel.com/.well-known/oauth-authorization-server": {
+        status: 404,
+        headers: {},
+      },
+      "https://vercel.com/.well-known/openid-configuration": {
+        status: 200,
+        headers: JSON_HEADERS,
+        body: VERCEL_OIDC_BODY,
+      },
+    });
+    const ctx = createScanContext({ url: "https://vercel.com", fetchImpl });
+    const result = await checkOauthDiscovery(ctx);
+
+    expect(result.status).toBe("pass");
+    expect(result.details?.source).toBe("openid-configuration");
+    expect(result.details?.issuer).toBe("https://vercel.com");
+    expect(result.details?.hasAuthorizationEndpoint).toBe(true);
+    expect(result.details?.hasTokenEndpoint).toBe(true);
+    expect(result.details?.hasJwksUri).toBe(true);
+    expect(result.details?.grantTypes).toEqual([
+      "authorization_code",
+      "client_credentials",
+      "refresh_token",
+      "urn:ietf:params:oauth:grant-type:device_code",
+    ]);
+  });
+
+  it("passes via oauth-authorization-server fallback when only that endpoint responds", async () => {
+    const { fetchImpl } = makeFetchStub({
+      "https://example.com/.well-known/oauth-authorization-server": {
+        status: 200,
+        headers: JSON_HEADERS,
+        body: JSON.stringify({
+          issuer: "https://example.com",
+          authorization_endpoint: "https://example.com/oauth/authorize",
+          token_endpoint: "https://example.com/oauth/token",
+          jwks_uri: "https://example.com/.well-known/jwks",
+        }),
+      },
+      "https://example.com/.well-known/openid-configuration": {
+        status: 404,
+        headers: { "content-type": "text/plain" },
+      },
+    });
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkOauthDiscovery(ctx);
+    expect(result.status).toBe("pass");
+    expect(result.details?.source).toBe("oauth-authorization-server");
+    expect(result.message).toBe("OAuth authorization server metadata found");
+  });
+
   it("passes when only openid-configuration responds", async () => {
     const { fetchImpl } = makeFetchStub({
       "https://example.com/.well-known/oauth-authorization-server": {
@@ -157,6 +227,7 @@ describe("checkOauthDiscovery — edge cases", () => {
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkOauthDiscovery(ctx);
     expect(result.status).toBe("pass");
+    expect(result.details?.source).toBe("openid-configuration");
   });
 
   it("fails when both endpoints return 404", async () => {
@@ -209,5 +280,29 @@ describe("checkOauthDiscovery — edge cases", () => {
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkOauthDiscovery(ctx);
     expect(result.status).toBe("fail");
+  });
+
+  it("preserves dispatch order (oauth-authorization-server first) regardless of resolution timing", async () => {
+    // Delay oauth-authorization-server so openid-configuration resolves first.
+    const fetchImpl: typeof fetch = async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.endsWith("/oauth-authorization-server")) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return new Response("", { status: 404 });
+    };
+    const ctx = createScanContext({ url: "https://example.com", fetchImpl });
+    const result = await checkOauthDiscovery(ctx);
+    expect(result.evidence[0]!.label).toBe(
+      "GET /.well-known/oauth-authorization-server",
+    );
+    expect(result.evidence[1]!.label).toBe(
+      "GET /.well-known/openid-configuration",
+    );
   });
 });
