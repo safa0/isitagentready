@@ -1,10 +1,12 @@
 /**
- * Internal helpers shared by the robots.txt-dependent checks that live in
- * this directory (robotsTxtAiRules, contentSignals). Not part of the public
- * engine API — intentionally prefixed with `_` to signal that.
+ * Cross-check shared helpers: JSON parsing, robots fetch-failure plumbing,
+ * AI bot token list.
  *
- * If more checks elsewhere in the codebase later need to depend on robots.txt
- * fetch-failure plumbing, promote this module up one level.
+ * Not part of the public engine API — intentionally prefixed with `_` to
+ * signal that. `tryParseJson` is consumed by the Phase-2 JSON-probing checks
+ * (api-catalog, oauth-discovery, oauth-protected-resource, mcp-server-card),
+ * while `buildFailNoRobots` and `AI_BOT_TOKENS` are consumed by the
+ * robots.txt-dependent checks (robotsTxtAiRules, contentSignals).
  */
 
 import {
@@ -13,6 +15,20 @@ import {
   type FetchOutcome,
 } from "@/lib/engine/context";
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
+
+/**
+ * Best-effort JSON parse — returns `undefined` on empty input or parse error.
+ * Lifted here from the per-check duplicates so every JSON-probing check
+ * shares a single implementation.
+ */
+export function tryParseJson(body: string | undefined): unknown | undefined {
+  if (body === undefined || body.length === 0) return undefined;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Canonical (lowercase) list of AI crawler user-agent tokens probed for in
