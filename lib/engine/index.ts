@@ -73,7 +73,7 @@ export interface RunScanOptions {
   readonly enabledChecks?: readonly CheckId[];
   /** Injectable fetch for tests. */
   readonly fetchImpl?: typeof fetch;
-  /** Hard cap for the whole scan, in ms. Defaults to 60_000. */
+  /** Per-fetch timeout, in ms. Defaults to `DEFAULT_TIMEOUT_MS` (10_000) via createScanContext. Scan-wide timeout is enforced at the route level via `signal`. */
   readonly timeoutMs?: number;
   /**
    * Optional cancellation signal. When aborted every in-flight probe is

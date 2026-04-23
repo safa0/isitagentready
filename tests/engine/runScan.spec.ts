@@ -350,7 +350,7 @@ describe("runScan - oracle fixture replay (H10)", () => {
 
   it("asserts level + levelName parity where full body replay succeeds (example baseline)", async () => {
     // The example.com fixture has a level-0 baseline with no passes — the
-    // only determinstic fixture that survives body-preview lossiness end
+    // only deterministic fixture that survives body-preview lossiness end
     // to end. The other 4 fixtures' level values require exact-body parity,
     // blocked by TODO(#6).
     const fixture = loadOracle("example");
