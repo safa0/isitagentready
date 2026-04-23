@@ -4,6 +4,7 @@ import {
   BODY_PREVIEW_TRUNCATED_SUFFIX,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_USER_AGENT,
+  RESPONSE_BODY_MAX_BYTES,
   createScanContext,
   fetchToStep,
   headersToRecord,
@@ -314,5 +315,250 @@ describe("createScanContext", () => {
         fetchImpl: undefined as unknown as typeof fetch,
       }),
     ).not.toThrow(); // falls back to globalThis.fetch on Node 24
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Redirect SSRF defence (H5)
+// ---------------------------------------------------------------------------
+
+function redirectFetchStub(
+  plan: Record<
+    string,
+    { status: number; location?: string; body?: string; headers?: Record<string, string> }
+  >,
+): { fetch: typeof fetch; calls: string[] } {
+  const calls: string[] = [];
+  const fn: typeof fetch = async (input) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    calls.push(url);
+    const entry = plan[url];
+    if (entry === undefined) {
+      throw new Error(`Unexpected fetch: ${url}`);
+    }
+    const headers = new Headers(entry.headers ?? {});
+    if (entry.location !== undefined) headers.set("location", entry.location);
+    return new Response(entry.body ?? "", { status: entry.status, headers });
+  };
+  return { fetch: fn, calls };
+}
+
+describe("createScanContext - redirect handling (SSRF defence)", () => {
+  it("refuses to follow a redirect to a private host", async () => {
+    const { fetch, calls } = redirectFetchStub({
+      "https://example.com/open": {
+        status: 302,
+        location: "http://169.254.169.254/",
+      },
+    });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+    });
+    const outcome = await ctx.fetch("/open");
+    expect(outcome.response).toBeUndefined();
+    expect(outcome.error).toMatch(/Redirect blocked/i);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("follows a redirect to a public host (within the hop budget)", async () => {
+    const { fetch, calls } = redirectFetchStub({
+      "https://example.com/start": {
+        status: 302,
+        location: "https://example.com/final",
+      },
+      "https://example.com/final": { status: 200, body: "ok" },
+    });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+    });
+    const outcome = await ctx.fetch("/start");
+    expect(outcome.response?.status).toBe(200);
+    expect(outcome.body).toBe("ok");
+    expect(calls).toEqual([
+      "https://example.com/start",
+      "https://example.com/final",
+    ]);
+  });
+
+  it("caps redirect chains at MAX_REDIRECT_HOPS", async () => {
+    const { fetch } = redirectFetchStub({
+      "https://example.com/a": {
+        status: 302,
+        location: "https://example.com/b",
+      },
+      "https://example.com/b": {
+        status: 302,
+        location: "https://example.com/c",
+      },
+      "https://example.com/c": {
+        status: 302,
+        location: "https://example.com/d",
+      },
+      "https://example.com/d": {
+        status: 302,
+        location: "https://example.com/e",
+      },
+    });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+    });
+    const outcome = await ctx.fetch("/a");
+    expect(outcome.response).toBeUndefined();
+    expect(outcome.error).toMatch(/too many redirects/i);
+  });
+
+  it("rejects a redirect Location with an unsupported scheme", async () => {
+    const { fetch } = redirectFetchStub({
+      "https://example.com/out": {
+        status: 302,
+        location: "file:///etc/passwd",
+      },
+    });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+    });
+    const outcome = await ctx.fetch("/out");
+    expect(outcome.error).toMatch(/Redirect blocked/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Response body byte cap (L-test-1)
+// ---------------------------------------------------------------------------
+
+describe("createScanContext - response body byte cap", () => {
+  it("truncates response bodies at RESPONSE_BODY_MAX_BYTES (slice-and-drop branch)", async () => {
+    // A single oversized chunk forces the "chunk larger than remaining"
+    // branch inside `readBodyCapped`, which slices the chunk down and then
+    // cancels the reader.
+    const chunk = new Uint8Array(RESPONSE_BODY_MAX_BYTES + 4096).fill(65);
+    const fetchImpl: typeof fetch = async () =>
+      new Response(chunk, { status: 200 });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl,
+    });
+    const outcome = await ctx.fetch("/big");
+    expect(outcome.response?.status).toBe(200);
+    expect(outcome.body).toBeDefined();
+    expect(outcome.body!.length).toBe(RESPONSE_BODY_MAX_BYTES);
+  });
+
+  it("truncates when the boundary is hit across multiple chunks", async () => {
+    // Build the response out of two chunks that straddle the 1 MiB cap so
+    // the `remaining <= 0` branch on the second read is also covered.
+    const chunkSize = 768 * 1024; // 768 KiB → two chunks = 1.5 MiB total.
+    const chunk1 = new Uint8Array(chunkSize).fill(66);
+    const chunk2 = new Uint8Array(chunkSize).fill(67);
+    const body = new Uint8Array(chunkSize * 2);
+    body.set(chunk1, 0);
+    body.set(chunk2, chunkSize);
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, { status: 200 });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl,
+    });
+    const outcome = await ctx.fetch("/big2");
+    expect(outcome.body).toBeDefined();
+    expect(outcome.body!.length).toBeLessThanOrEqual(RESPONSE_BODY_MAX_BYTES);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-hop relative redirects (L-sec-1)
+// ---------------------------------------------------------------------------
+
+describe("createScanContext - relative redirect chains", () => {
+  it("resolves relative Location against the previous hop, not the original URL", async () => {
+    const { fetch, calls } = redirectFetchStub({
+      "https://example.com/deep/start": {
+        status: 302,
+        location: "/hop1", // resolves against origin /deep/start → /hop1
+      },
+      "https://example.com/hop1": {
+        status: 302,
+        location: "hop2", // relative to /hop1 → /hop2
+      },
+      "https://example.com/hop2": { status: 200, body: "done" },
+    });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+    });
+    const outcome = await ctx.fetch("/deep/start");
+    expect(outcome.response?.status).toBe(200);
+    expect(outcome.body).toBe("done");
+    expect(calls).toEqual([
+      "https://example.com/deep/start",
+      "https://example.com/hop1",
+      "https://example.com/hop2",
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal plumbing (H4)
+// ---------------------------------------------------------------------------
+
+describe("createScanContext - abort signal", () => {
+  it("aborts an in-flight fetch when the external signal fires", async () => {
+    // A fetch that races the abort.
+    const fetchImpl: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const sig = init?.signal;
+        if (sig?.aborted) return reject(sig.reason ?? new Error("aborted"));
+        sig?.addEventListener("abort", () =>
+          reject(sig.reason ?? new Error("aborted")),
+        );
+      });
+    const controller = new AbortController();
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl,
+      signal: controller.signal,
+    });
+    const p = ctx.fetch("/slow");
+    controller.abort(new Error("scan cancelled"));
+    const outcome = await p;
+    expect(outcome.response).toBeUndefined();
+    expect(outcome.error).toMatch(/cancelled|abort/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared probe memo (H9)
+// ---------------------------------------------------------------------------
+
+describe("createScanContext - shared probe memo", () => {
+  it("contexts sharing a SharedProbes record issue a single homepage fetch", async () => {
+    const { fetch, calls } = makeFetchStub({
+      "https://example.com/": { status: 200, body: "<html></html>" },
+    });
+    const { createSharedProbes } = await import("@/lib/engine/context");
+    const shared = createSharedProbes();
+    const ctxA = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+      sharedProbes: shared,
+    });
+    const ctxB = createScanContext({
+      url: "https://example.com",
+      fetchImpl: fetch,
+      sharedProbes: shared,
+    });
+    const [a, b] = await Promise.all([ctxA.getHomepage(), ctxB.getHomepage()]);
+    expect(calls).toHaveLength(1);
+    // Same promise result reference — sharedProbes returns the memo verbatim.
+    expect(a).toBe(b);
   });
 });

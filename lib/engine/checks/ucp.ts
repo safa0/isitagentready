@@ -33,10 +33,6 @@ const REQUIRED_FIELDS = [
   "endpoints",
 ] as const;
 
-interface Options {
-  readonly isCommerce: boolean;
-}
-
 function evaluate(outcome: FetchOutcome): {
   pass: boolean;
   summary: string;
@@ -94,7 +90,6 @@ function evaluate(outcome: FetchOutcome): {
 
 export async function checkUcp(
   ctx: ScanContext,
-  opts: Options,
 ): Promise<CheckResult> {
   const started = Date.now();
   const outcome = await ctx.fetch("/.well-known/ucp");
@@ -122,7 +117,7 @@ export async function checkUcp(
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -139,6 +134,6 @@ export async function checkUcp(
       evidence,
       durationMs: Date.now() - started,
     },
-    opts.isCommerce,
+    ctx.isCommerce,
   );
 }

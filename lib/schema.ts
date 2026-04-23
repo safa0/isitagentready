@@ -199,6 +199,19 @@ export type NextLevel = z.infer<typeof NextLevelSchema>;
 // Top-level scan response
 // ---------------------------------------------------------------------------
 
+/**
+ * The full scan envelope returned by POST /api/scan and the MCP `scan_site`
+ * tool.
+ *
+ * Default-profile divergence note
+ * -------------------------------
+ * `a2aAgentCard` is opt-in (see `DEFAULT_ENABLED_CHECKS` in
+ * `lib/engine/scoring.ts`). When it is not enabled, the `ap2` commerce check
+ * emits a neutral `"Skipped: requires a2aAgentCard to be enabled."` verdict
+ * instead of pass/fail. This divergence from the reference scanner is
+ * intentional — see the module docblock in `lib/engine/checks/ap2.ts` for
+ * rationale and how to request full parity via `enabledChecks`.
+ */
 export const ScanResponseSchema = z.object({
   url: z.string(),
   scannedAt: z.string(), // ISO-8601
@@ -216,9 +229,11 @@ export type ScanResponse = z.infer<typeof ScanResponseSchema>;
 // ---------------------------------------------------------------------------
 
 export const ScanRequestSchema = z.object({
-  url: z.string().url(),
+  url: z.string().url().max(2048),
   profile: ProfileSchema.optional(),
-  enabledChecks: z.array(CheckIdSchema).optional(),
+  // There are 19 canonical check ids; cap at 19 so an attacker can't ship
+  // a megabyte-long check list that the scheduler then iterates over.
+  enabledChecks: z.array(CheckIdSchema).max(19).optional(),
   format: z.literal("agent").optional(),
 });
 export type ScanRequest = z.infer<typeof ScanRequestSchema>;

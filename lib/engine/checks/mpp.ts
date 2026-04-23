@@ -29,10 +29,6 @@ const CONCLUDE_LABEL = "Conclusion";
 const PASS_MESSAGE = "MPP payment discovery detected";
 const FAIL_MESSAGE = "MPP payment discovery not detected";
 
-interface Options {
-  readonly isCommerce: boolean;
-}
-
 function containsKeyDeep(value: unknown, key: string): boolean {
   if (value === null || typeof value !== "object") return false;
   if (Array.isArray(value)) {
@@ -103,7 +99,6 @@ function evaluate(outcome: FetchOutcome): {
 
 export async function checkMpp(
   ctx: ScanContext,
-  opts: Options,
 ): Promise<CheckResult> {
   const started = Date.now();
   const outcome = await ctx.fetch("/openapi.json");
@@ -131,7 +126,7 @@ export async function checkMpp(
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -148,6 +143,6 @@ export async function checkMpp(
       evidence,
       durationMs: Date.now() - started,
     },
-    opts.isCommerce,
+    ctx.isCommerce,
   );
 }

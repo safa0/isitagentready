@@ -278,8 +278,3 @@ export async function detectCommerce(
     commerceSignals: ordered,
   };
 }
-
-// TODO(phase-3): When the orchestrator wires checks together it will normalise
-// the signature shape for commerce checks by widening `ScanContext` to include
-// `isCommerce` / `commerceSignals` directly (M4-norm from iter-1 review), so
-// individual checks no longer need a bespoke `opts.isCommerce` parameter.

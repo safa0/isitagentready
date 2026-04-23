@@ -18,13 +18,27 @@
  * a2a result, matching both shopify and vercel oracles which record an
  * absent card.
  *
+ * Default-path divergence from the reference scanner
+ * --------------------------------------------------
+ * The reference (isitagentready.com) scanner runs `a2aAgentCard` by default
+ * and therefore always records an AP2 pass/fail. This port keeps
+ * `a2aAgentCard` OFF by default (see `DEFAULT_ENABLED_CHECKS`), which means
+ * AP2 returns a `neutral "Skipped: requires a2aAgentCard to be enabled."`
+ * verdict unless the caller explicitly opts in. This divergence from the
+ * reference scanner is intentional — the A2A Agent Card probe is a long-tail
+ * well-known fetch that most callers don't need, and emitting a blanket
+ * "fail" on every non-a2a scan would penalise sites that simply aren't using
+ * A2A yet. Callers who want full parity should pass
+ * `enabledChecks: [...DEFAULT_ENABLED_CHECKS, "a2aAgentCard"]` (or an
+ * explicit full list) to `runScan`.
+ *
  * Commerce gating mirrors the other commerce checks: when `isCommerce` is
  * false, the top-level status is forced to "neutral" and
  * " (not a commerce site)" is appended to the message. The inner evidence
  * and conclusion finding are preserved verbatim.
  */
 
-import { makeStep } from "@/lib/engine/context";
+import { makeStep, type ScanContext } from "@/lib/engine/context";
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
 import { applyCommerceGate } from "@/lib/engine/commerce-signals";
 
@@ -58,16 +72,6 @@ const AP2_SKILL_TOKENS = [
   "payments",
   "checkout",
 ] as const;
-
-interface Options {
-  readonly isCommerce: boolean;
-  /**
-   * Result of the `a2aAgentCard` check from the same scan. Nullable to
-   * accommodate callers (orchestrator, tests) that haven't yet computed
-   * it — treated as "no card present".
-   */
-  readonly a2aAgentCard: CheckResult | null;
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -113,10 +117,33 @@ function hasAp2Skill(tokens: readonly string[]): boolean {
 // Main
 // ---------------------------------------------------------------------------
 
-export async function checkAp2(opts: Options): Promise<CheckResult> {
+export async function checkAp2(ctx: ScanContext): Promise<CheckResult> {
   const started = Date.now();
 
-  const a2a = opts.a2aAgentCard;
+  const a2a = ctx.a2aAgentCard;
+
+  // When the orchestrator didn't run the a2a check (caller excluded it or
+  // it is opt-in-by-default), AP2 cannot truthfully claim a negative — we
+  // just didn't look. Emit a neutral "skipped" verdict so scoring and
+  // level gates don't count this against the site.
+  if (a2a === null && !ctx.a2aAgentCardEnabled) {
+    const skippedMessage = "Skipped: requires a2aAgentCard to be enabled.";
+    const evidence: EvidenceStep[] = [
+      makeStep("conclude", CONCLUDE_LABEL, {
+        outcome: "neutral",
+        summary: skippedMessage,
+      }),
+    ];
+    // The commerce gate would force neutral + a site suffix, but "skipped"
+    // is already the right answer regardless of isCommerce.
+    return {
+      status: "neutral",
+      message: skippedMessage,
+      evidence,
+      durationMs: Date.now() - started,
+    };
+  }
+
   const cardMissing = a2a === null || a2a.status !== "pass";
 
   if (cardMissing) {
@@ -133,7 +160,7 @@ export async function checkAp2(opts: Options): Promise<CheckResult> {
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -152,7 +179,7 @@ export async function checkAp2(opts: Options): Promise<CheckResult> {
         evidence,
         durationMs: Date.now() - started,
       },
-      opts.isCommerce,
+      ctx.isCommerce,
     );
   }
 
@@ -169,6 +196,6 @@ export async function checkAp2(opts: Options): Promise<CheckResult> {
       evidence,
       durationMs: Date.now() - started,
     },
-    opts.isCommerce,
+    ctx.isCommerce,
   );
 }
