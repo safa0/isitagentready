@@ -130,12 +130,32 @@ describe("checkOauthProtectedResource — edge cases", () => {
   });
 
   it("fails gracefully on transport errors to well-known", async () => {
-    const fetchImpl: typeof fetch = async () => {
-      throw new Error("ECONNRESET");
+    const fetchImpl: typeof fetch = async (input) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url.includes("/.well-known/oauth-protected-resource")) {
+        throw new Error("ECONNRESET");
+      }
+      // Homepage (and any other non-well-known request) returns a normal 200.
+      return new Response("", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
     };
     const ctx = createScanContext({ url: "https://example.com", fetchImpl });
     const result = await checkOauthProtectedResource(ctx);
     expect(result.status).toBe("fail");
+    // The well-known fetch must have failed (transport error).
+    const wellKnownStep = result.evidence.find(
+      (s) =>
+        s.action === "fetch" &&
+        s.label === "GET /.well-known/oauth-protected-resource",
+    );
+    expect(wellKnownStep?.finding.outcome).toBe("negative");
   });
 
   it("records a positive homepage finding when WWW-Authenticate is present", async () => {
