@@ -9,7 +9,8 @@
  *   Content-Signal: search=yes, ai-input=yes, ai-train=no
  *
  * Each Content-Signal directive is scoped to the most recent User-agent group
- * (and optionally to a Path: line). Directive values are either yes or no;
+ * (and optionally to a Path: line — which, per the draft, applies ONLY to the
+ * directive immediately following it). Directive values are either yes or no;
  * recognised keys are search, ai-input, ai-train.
  *
  * Pass: at least one Content-Signal directive present.
@@ -20,10 +21,10 @@
 import {
   fetchToStep,
   makeStep,
-  type FetchOutcome,
   type ScanContext,
 } from "@/lib/engine/context";
 import type { CheckResult, EvidenceStep } from "@/lib/schema";
+import { buildFailNoRobots } from "./_shared";
 
 const FETCH_LABEL = "GET /robots.txt";
 const PARSE_LABEL = "Parse Content-Signal directives";
@@ -97,42 +98,14 @@ function parseContentSignals(body: string): ContentSignal[] {
         else if (key === "ai-input") directive.aiInput = value;
       }
       signals.push(directive);
+      // Per the contentsignals.org draft, `Path:` applies ONLY to the
+      // directive immediately following it. Reset after consumption so the
+      // next Content-Signal line is not accidentally scoped to the same path.
+      currentPath = null;
     }
   }
 
   return signals;
-}
-
-function buildFailNoRobots(
-  outcome: FetchOutcome,
-  startedAt: number,
-): CheckResult {
-  const evidence: EvidenceStep[] = [];
-  const fetchFinding =
-    outcome.response === undefined
-      ? {
-          outcome: "negative" as const,
-          summary: `Transport error fetching robots.txt: ${outcome.error ?? "unknown"}`,
-        }
-      : {
-          outcome: "negative" as const,
-          summary: `Server returned ${outcome.response.status} -- robots.txt not found`,
-        };
-
-  evidence.push(fetchToStep(outcome, FETCH_LABEL, fetchFinding));
-  evidence.push(
-    makeStep("conclude", CONCLUDE_LABEL, {
-      outcome: "negative",
-      summary: FAIL_NO_ROBOTS_MESSAGE,
-    }),
-  );
-
-  return {
-    status: "fail",
-    message: FAIL_NO_ROBOTS_MESSAGE,
-    evidence,
-    durationMs: Date.now() - startedAt,
-  };
 }
 
 export async function checkContentSignals(
@@ -142,7 +115,13 @@ export async function checkContentSignals(
   const outcome = await ctx.getRobotsTxt();
 
   if (outcome.response === undefined || outcome.response.status !== 200) {
-    return buildFailNoRobots(outcome, started);
+    return buildFailNoRobots({
+      outcome,
+      startedAt: started,
+      fetchLabel: FETCH_LABEL,
+      concludeLabel: CONCLUDE_LABEL,
+      failMessage: FAIL_NO_ROBOTS_MESSAGE,
+    });
   }
 
   const contentType = outcome.response.headers["content-type"] ?? "unknown";

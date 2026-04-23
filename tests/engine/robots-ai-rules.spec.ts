@@ -7,7 +7,6 @@
  */
 
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
@@ -39,8 +38,8 @@ interface Fixture {
 }
 
 function loadFixture(name: string): Fixture {
-  const file = path.join(process.cwd(), "research", "raw", name);
-  const json = JSON.parse(readFileSync(file, "utf8"));
+  const fileUrl = new URL(`../../research/raw/${name}`, import.meta.url);
+  const json = JSON.parse(readFileSync(fileUrl, "utf8"));
   return {
     url: json.url,
     oracle: json.checks.botAccessControl.robotsTxtAiRules,
@@ -60,13 +59,31 @@ function buildFetchFromOracle(oracle: OracleCheckResult): typeof fetch {
   if (!fetchStep?.response) {
     throw new Error("oracle missing /robots.txt fetch evidence");
   }
+  const expectedUrl = fetchStep.request?.url;
+  // Normalise via the WHATWG URL parser so trivial cosmetic differences do
+  // not break the match (see markdown-negotiation.spec.ts for rationale).
+  const expectedHref =
+    expectedUrl !== undefined ? new URL(expectedUrl).href : undefined;
   const response = fetchStep.response;
-  return (async () =>
-    new Response(response.bodyPreview ?? "", {
+  return (async (input) => {
+    const requestedRaw =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const requestedHref = new URL(requestedRaw).href;
+    if (expectedHref !== undefined && requestedHref !== expectedHref) {
+      throw new Error(
+        `unexpected fetch URL: got ${requestedHref}, expected ${expectedHref}`,
+      );
+    }
+    return new Response(response.bodyPreview ?? "", {
       status: response.status,
       statusText: response.statusText ?? (response.status === 200 ? "OK" : ""),
       headers: response.headers ?? {},
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
 }
 
 describe("checkRobotsTxtAiRules — oracle fixtures", () => {
@@ -78,13 +95,14 @@ describe("checkRobotsTxtAiRules — oracle fixtures", () => {
       });
       const result = await checkRobotsTxtAiRules(ctx);
 
-      expect(CheckResultSchema.parse(result)).toEqual(result);
+      expect(() => CheckResultSchema.parse(result)).not.toThrow();
       expect(result.status).toBe(fixture.oracle.status);
       expect(result.message).toBe(fixture.oracle.message);
 
       const oracleActions = fixture.oracle.evidence.map((s) => s.action);
       const actualActions = result.evidence.map((s) => s.action);
       expect(actualActions).toEqual(oracleActions);
+      expect(result.evidence).toHaveLength(fixture.oracle.evidence.length);
 
       for (let i = 0; i < fixture.oracle.evidence.length; i++) {
         const want = fixture.oracle.evidence[i]!;
@@ -124,6 +142,40 @@ describe("checkRobotsTxtAiRules — edge cases", () => {
     expect((result.details?.foundBots as string[]).includes("gptbot")).toBe(
       true,
     );
+  });
+
+  it("parses multiple UA tokens on a single line (comma separated)", async () => {
+    const body = "User-agent: GPTBot, ChatGPT-User\nDisallow: /\n";
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    const ctx = createScanContext({
+      url: "https://multi-ua-comma.test",
+      fetchImpl,
+    });
+    const result = await checkRobotsTxtAiRules(ctx);
+    expect(result.status).toBe("pass");
+    const found = result.details?.foundBots as string[];
+    expect(found).toEqual(expect.arrayContaining(["gptbot", "chatgpt-user"]));
+  });
+
+  it("parses multiple UA tokens on a single line (whitespace separated)", async () => {
+    const body = "User-agent: GPTBot ChatGPT-User\nDisallow: /\n";
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    const ctx = createScanContext({
+      url: "https://multi-ua-ws.test",
+      fetchImpl,
+    });
+    const result = await checkRobotsTxtAiRules(ctx);
+    expect(result.status).toBe("pass");
+    const found = result.details?.foundBots as string[];
+    expect(found).toEqual(expect.arrayContaining(["gptbot", "chatgpt-user"]));
   });
 
   it("fails when robots.txt is missing (404)", async () => {

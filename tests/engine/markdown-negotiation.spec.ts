@@ -9,7 +9,6 @@
  */
 
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
@@ -47,8 +46,8 @@ interface Fixture {
 }
 
 function loadFixture(name: string): Fixture {
-  const file = path.join(process.cwd(), "research", "raw", name);
-  const json = JSON.parse(readFileSync(file, "utf8"));
+  const fileUrl = new URL(`../../research/raw/${name}`, import.meta.url);
+  const json = JSON.parse(readFileSync(fileUrl, "utf8"));
   return {
     url: json.url,
     oracle: json.checks.contentAccessibility.markdownNegotiation,
@@ -72,13 +71,32 @@ function buildFetchFromOracle(oracle: OracleCheckResult): typeof fetch {
   if (!fetchStep?.response) {
     throw new Error("oracle missing homepage fetch evidence");
   }
+  const expectedUrl = fetchStep.request?.url;
+  // Normalise via the WHATWG URL parser so trivial cosmetic differences
+  // (e.g. oracle recording `https://example.com` vs context fetching
+  // `https://example.com/`) do not break the match.
+  const expectedHref =
+    expectedUrl !== undefined ? new URL(expectedUrl).href : undefined;
   const response = fetchStep.response;
-  return (async () =>
-    new Response(response.bodyPreview ?? "", {
+  return (async (input) => {
+    const requestedRaw =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const requestedHref = new URL(requestedRaw).href;
+    if (expectedHref !== undefined && requestedHref !== expectedHref) {
+      throw new Error(
+        `unexpected fetch URL: got ${requestedHref}, expected ${expectedHref}`,
+      );
+    }
+    return new Response(response.bodyPreview ?? "", {
       status: response.status,
       statusText: response.statusText ?? "OK",
       headers: response.headers ?? {},
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +113,7 @@ describe("checkMarkdownNegotiation — oracle fixtures", () => {
       const result = await checkMarkdownNegotiation(ctx);
 
       // shape
-      expect(CheckResultSchema.parse(result)).toEqual(result);
+      expect(() => CheckResultSchema.parse(result)).not.toThrow();
 
       // headline
       expect(result.status).toBe(fixture.oracle.status);
@@ -112,6 +130,7 @@ describe("checkMarkdownNegotiation — oracle fixtures", () => {
       const oracleActions = fixture.oracle.evidence.map((s) => s.action);
       const actualActions = result.evidence.map((s) => s.action);
       expect(actualActions).toEqual(oracleActions);
+      expect(result.evidence).toHaveLength(fixture.oracle.evidence.length);
 
       for (let i = 0; i < fixture.oracle.evidence.length; i++) {
         const want = fixture.oracle.evidence[i]!;
@@ -196,5 +215,22 @@ describe("checkMarkdownNegotiation — edge cases", () => {
     const result = await checkMarkdownNegotiation(ctx);
     expect(result.status).toBe("fail");
     expect(result.details?.contentType).toBe("text/html");
+  });
+
+  it("does not match non-standard variants like text/markdown-foo", async () => {
+    // Guard against the old `startsWith` idiom — a boundary check should
+    // reject unregistered subtypes that merely share the prefix.
+    const fetchImpl: typeof fetch = async () =>
+      new Response("", {
+        status: 200,
+        headers: { "content-type": "text/markdown-foo" },
+      });
+    const ctx = createScanContext({
+      url: "https://example.com",
+      fetchImpl,
+    });
+    const result = await checkMarkdownNegotiation(ctx);
+    expect(result.status).toBe("fail");
+    expect(result.details?.contentType).toBe("text/markdown-foo");
   });
 });

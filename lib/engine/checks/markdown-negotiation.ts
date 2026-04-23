@@ -21,8 +21,13 @@ const CONCLUDE_LABEL = "Conclusion";
 const PASS_MESSAGE = "Site supports Markdown for Agents";
 const FAIL_MESSAGE = "Site does not support Markdown for Agents";
 
+// Match `text/markdown` as a full media type token — either alone or
+// followed by parameters (`; charset=utf-8`). Prevents false matches like
+// `text/markdown-foo` which a naive startsWith() would accept.
+const MARKDOWN_CONTENT_TYPE_RE = /^text\/markdown(\s*;|\s*$)/i;
+
 function isMarkdownContentType(contentType: string): boolean {
-  return contentType.trim().toLowerCase().startsWith("text/markdown");
+  return MARKDOWN_CONTENT_TYPE_RE.test(contentType.trim());
 }
 
 export async function checkMarkdownNegotiation(

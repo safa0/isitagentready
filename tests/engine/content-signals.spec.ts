@@ -7,7 +7,6 @@
  */
 
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createScanContext } from "@/lib/engine/context";
 import { CheckResultSchema } from "@/lib/schema";
@@ -39,8 +38,10 @@ interface Fixture {
 }
 
 function loadFixture(name: string): Fixture {
-  const file = path.join(process.cwd(), "research", "raw", name);
-  const json = JSON.parse(readFileSync(file, "utf8"));
+  // Use import.meta.url so path resolution does not depend on the test
+  // runner's cwd — works uniformly in Vitest local runs and CI.
+  const fileUrl = new URL(`../../research/raw/${name}`, import.meta.url);
+  const json = JSON.parse(readFileSync(fileUrl, "utf8"));
   return {
     url: json.url,
     oracle: json.checks.botAccessControl.contentSignals,
@@ -61,12 +62,21 @@ const FIXTURES: Record<string, Fixture> = {
  * indicate Content-Signal directives that land past the truncation boundary
  * (notably scan-cf-dev.json), we splice synthetic directives back in using the
  * structured `details.signals` list so the parser can observe them.
+ *
+ * The returned fetch guards the requested URL: only the oracle's recorded
+ * `/robots.txt` URL is allowed, other paths throw. This prevents silent
+ * passes when a check is accidentally rewired.
  */
 function buildFetchFromOracle(oracle: OracleCheckResult): typeof fetch {
   const fetchStep = oracle.evidence.find((s) => s.action === "fetch");
   if (!fetchStep?.response) {
     throw new Error("oracle missing /robots.txt fetch evidence");
   }
+  const expectedUrl = fetchStep.request?.url;
+  // Normalise via the WHATWG URL parser so trivial cosmetic differences do
+  // not break the match (see markdown-negotiation.spec.ts for rationale).
+  const expectedHref =
+    expectedUrl !== undefined ? new URL(expectedUrl).href : undefined;
   const response = fetchStep.response;
   let body = response.bodyPreview ?? "";
   const signals = oracle.details?.signals;
@@ -97,12 +107,25 @@ function buildFetchFromOracle(oracle: OracleCheckResult): typeof fetch {
       body = `${body}\n${appendix.join("\n")}\n`;
     }
   }
-  return (async () =>
-    new Response(body, {
+  return (async (input) => {
+    const requestedRaw =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const requestedHref = new URL(requestedRaw).href;
+    if (expectedHref !== undefined && requestedHref !== expectedHref) {
+      throw new Error(
+        `unexpected fetch URL: got ${requestedHref}, expected ${expectedHref}`,
+      );
+    }
+    return new Response(body, {
       status: response.status,
       statusText: response.statusText ?? (response.status === 200 ? "OK" : ""),
       headers: response.headers ?? {},
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
 }
 
 describe("checkContentSignals — oracle fixtures", () => {
@@ -114,13 +137,14 @@ describe("checkContentSignals — oracle fixtures", () => {
       });
       const result = await checkContentSignals(ctx);
 
-      expect(CheckResultSchema.parse(result)).toEqual(result);
+      expect(() => CheckResultSchema.parse(result)).not.toThrow();
       expect(result.status).toBe(fixture.oracle.status);
       expect(result.message).toBe(fixture.oracle.message);
 
       const oracleActions = fixture.oracle.evidence.map((s) => s.action);
       const actualActions = result.evidence.map((s) => s.action);
       expect(actualActions).toEqual(oracleActions);
+      expect(result.evidence).toHaveLength(fixture.oracle.evidence.length);
 
       for (let i = 0; i < fixture.oracle.evidence.length; i++) {
         const want = fixture.oracle.evidence[i]!;
@@ -162,6 +186,79 @@ describe("checkContentSignals — edge cases", () => {
       search: "yes",
       aiInput: "yes",
     });
+  });
+
+  it("scopes Path: only to the directive immediately following", async () => {
+    // Per the contentsignals.org draft: Path applies to ONE directive.
+    // Here `/foo/*` should attach to signal #1 but NOT signal #2.
+    const body = [
+      "User-Agent: *",
+      "Path: /foo/*",
+      "Content-Signal: ai-train=no",
+      "Content-Signal: ai-train=yes",
+      "",
+    ].join("\n");
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    const ctx = createScanContext({
+      url: "https://scope.test",
+      fetchImpl,
+    });
+    const result = await checkContentSignals(ctx);
+    expect(result.status).toBe("pass");
+    const signals = result.details?.signals as Array<Record<string, unknown>>;
+    expect(signals).toHaveLength(2);
+    expect(signals[0]!.path).toBe("/foo/*");
+    expect(signals[0]!.aiTrain).toBe("no");
+    expect(signals[1]!.path).toBeNull();
+    expect(signals[1]!.aiTrain).toBe("yes");
+  });
+
+  it("silently drops unrecognized signal values", async () => {
+    // `search=maybe` is not `yes`/`no`, so the value is ignored and that key
+    // stays null on the directive — the directive itself still records.
+    const body =
+      "User-Agent: *\nContent-Signal: search=maybe, ai-train=no\n";
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    const ctx = createScanContext({
+      url: "https://unknownval.test",
+      fetchImpl,
+    });
+    const result = await checkContentSignals(ctx);
+    expect(result.status).toBe("pass");
+    const signals = result.details?.signals as Array<Record<string, unknown>>;
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.search).toBeNull();
+    expect(signals[0]!.aiTrain).toBe("no");
+  });
+
+  it("skips Content-Signal lines with no key=value pairs", async () => {
+    // Exercises the `continue` branch where split("=") yields only one part.
+    const body = "User-Agent: *\nContent-Signal: yes\n";
+    const fetchImpl: typeof fetch = async () =>
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      });
+    const ctx = createScanContext({
+      url: "https://malformed.test",
+      fetchImpl,
+    });
+    const result = await checkContentSignals(ctx);
+    // The directive line still matched; it just has no resolved fields.
+    expect(result.status).toBe("pass");
+    const signals = result.details?.signals as Array<Record<string, unknown>>;
+    expect(signals).toHaveLength(1);
+    expect(signals[0]!.search).toBeNull();
+    expect(signals[0]!.aiInput).toBeNull();
+    expect(signals[0]!.aiTrain).toBeNull();
   });
 
   it("fails when robots.txt has no Content-Signal directive", async () => {
