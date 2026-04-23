@@ -233,6 +233,9 @@ describe("linkHeaders — edge cases", () => {
 
   // Exercises the `raw[i - 1] !== "\\"` escape-guard inside splitTopLevel:
   // the escaped inner quote must not prematurely close the quoted region.
+  // NOTE: this is a regression guard, not a coverage guard — the underlying
+  // branch is already covered by other specs in this file. Keep it to lock in
+  // correct behaviour if the splitter is ever rewritten.
   it("handles an escaped quote inside a quoted title", async () => {
     const { fetchImpl } = makeFetchStub({
       "https://escq.test/": {

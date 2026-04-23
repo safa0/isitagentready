@@ -14,7 +14,8 @@
  *      /sitemap-index.xml, /sitemap.xml.gz, /sitemap_index.xml, /sitemap.xml.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { XMLParser } from "fast-xml-parser";
 
 import {
   ALL_SITES,
@@ -288,18 +289,22 @@ describe("sitemap — edge cases", () => {
     expect(result.status).toBe("fail");
   });
 
-  // Exercises the XMLParser.parse() catch arm in parseSitemapBody. An
-  // unclosed CDATA block reliably throws in fast-xml-parser 5.x (default
-  // options are otherwise lenient; see ad-hoc probing in iter-2 review).
+  // Exercises the XMLParser.parse() catch arm in parseSitemapBody. We mock
+  // the parser to throw directly so the test is independent of fast-xml-parser
+  // version/leniency quirks.
   it("fails when a sitemap returns 200 but XMLParser throws on the body", async () => {
+    const parseSpy = vi
+      .spyOn(XMLParser.prototype, "parse")
+      .mockImplementationOnce(() => {
+        throw new Error("boom");
+      });
     const { fetchImpl } = makeFetchStub({
       "https://cdata.test/robots.txt": new Error("ENOTFOUND"),
       "https://cdata.test/sitemap-index.xml": {
         status: 200,
         statusText: "OK",
         headers: { "content-type": "application/xml" },
-        // Unclosed CDATA -> fast-xml-parser throws "CDATA is not closed".
-        body: "<urlset><url><loc><![CDATA[x</loc></url></urlset>",
+        body: "<urlset></urlset>",
       },
       "https://cdata.test/sitemap.xml.gz": {
         status: 404,
@@ -325,6 +330,8 @@ describe("sitemap — edge cases", () => {
       (s: EvidenceStep) => s.action === "fetch",
     )!;
     expect(firstFetch.finding.outcome).toBe("negative");
+    expect(parseSpy).toHaveBeenCalled();
+    parseSpy.mockRestore();
   });
 
   // Exercises the `catch` arms in resolveCandidate and labelFor: a Sitemap
@@ -345,10 +352,10 @@ describe("sitemap — edge cases", () => {
     const result = await checkSitemap(ctx);
     expect(result.status).toBe("fail");
     // Label falls back to the raw string via labelFor's catch arm.
-    const fetchLabels = result.evidence
-      .filter((s: EvidenceStep) => s.action === "fetch")
+    const validateLabels = result.evidence
+      .filter((s: EvidenceStep) => s.action === "validate")
       .map((s: EvidenceStep) => s.label);
-    expect(fetchLabels).toContain(`GET ${badCandidate}`);
+    expect(validateLabels).toContain(`GET ${badCandidate}`);
     // No real fetch is attempted for the unparseable candidate.
     expect(calls).not.toContain(badCandidate);
   });

@@ -149,7 +149,7 @@ export async function checkSitemap(ctx: ScanContext): Promise<CheckResult> {
     const label = labelFor(candidate, ctx.origin);
     if (resolved === undefined) {
       evidence.push(
-        makeStep("fetch", label, {
+        makeStep("validate", label, {
           outcome: "negative",
           summary: `Could not parse sitemap URL ${candidate}`,
         }),
