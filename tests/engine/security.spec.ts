@@ -72,6 +72,36 @@ describe("isPrivateHost", () => {
     expect(isPrivateHost("localhost")).toBe(true);
     expect(isPrivateHost("LOCALHOST")).toBe(true);
   });
+
+  it("treats IPv4-mapped IPv6 loopback/private addresses as private (H6)", () => {
+    // Dotted-quad form.
+    expect(isPrivateHost("::ffff:127.0.0.1")).toBe(true);
+    expect(isPrivateHost("::ffff:10.0.0.1")).toBe(true);
+    // Hex-pair form (::ffff:7f00:1 == 127.0.0.1).
+    expect(isPrivateHost("::ffff:7f00:1")).toBe(true);
+  });
+
+  it("treats CGNAT 100.64.0.0/10 as private", () => {
+    expect(isPrivateHost("100.64.0.1")).toBe(true);
+    expect(isPrivateHost("100.127.255.254")).toBe(true);
+    expect(isPrivateHost("100.63.255.255")).toBe(false);
+    expect(isPrivateHost("100.128.0.1")).toBe(false);
+  });
+
+  it("treats the IPv6 all-zero address as private", () => {
+    expect(isPrivateHost("::")).toBe(true);
+  });
+
+  it("treats foo.localhost and ip6-* variants as private", () => {
+    expect(isPrivateHost("foo.localhost")).toBe(true);
+    expect(isPrivateHost("bar.baz.localhost")).toBe(true);
+    expect(isPrivateHost("ip6-localhost")).toBe(true);
+    expect(isPrivateHost("ip6-loopback")).toBe(true);
+  });
+
+  it("treats metadata.google.internal as private", () => {
+    expect(isPrivateHost("metadata.google.internal")).toBe(true);
+  });
 });
 
 describe("assertPublicUrl", () => {

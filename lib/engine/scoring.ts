@@ -122,9 +122,10 @@ export function scoreScan(
   let fails = 0;
   for (const id of ALL_CHECK_IDS) {
     const r = results[id];
+    if (r === undefined) continue;
     if (!isScored(id, r, opts)) continue;
-    if (r!.status === "pass") passes += 1;
-    else if (r!.status === "fail") fails += 1;
+    if (r.status === "pass") passes += 1;
+    else if (r.status === "fail") fails += 1;
   }
   const denom = passes + fails;
   if (denom === 0) return 0;
@@ -144,10 +145,11 @@ export function computeCategoryScores(
   };
   for (const id of ALL_CHECK_IDS) {
     const r = results[id];
+    if (r === undefined) continue;
     if (!isScored(id, r, opts)) continue;
     const cat = CHECK_CATEGORY[id];
-    if (r!.status === "pass") buckets[cat].passes += 1;
-    else if (r!.status === "fail") buckets[cat].fails += 1;
+    if (r.status === "pass") buckets[cat].passes += 1;
+    else if (r.status === "fail") buckets[cat].fails += 1;
   }
   const out: Partial<Record<CategoryId, CategoryScore>> = {};
   for (const cat of Object.keys(buckets) as CategoryId[]) {

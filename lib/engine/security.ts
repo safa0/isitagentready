@@ -109,15 +109,25 @@ function stripIPv6Brackets(host: string): string {
 
 function isIPv6Literal(host: string): boolean {
   const inner = stripIPv6Brackets(host);
-  // A minimum-viable IPv6 detector: contains `:` and only hex digits/colons.
+  // A minimum-viable IPv6 detector: contains `:` and only hex digits, colons,
+  // or dots (dots appear in IPv4-mapped IPv6 addresses, e.g. `::ffff:1.2.3.4`).
   if (!inner.includes(":")) return false;
-  return /^[0-9a-fA-F:]+$/.test(inner);
+  return /^[0-9a-fA-F:.]+$/.test(inner);
 }
 
 function isPrivateIPv6(host: string): boolean {
   const inner = stripIPv6Brackets(host).toLowerCase();
   if (inner === "::1") return true;
   if (inner === "::") return true;
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d or ::ffff:XXXX:YYYY). Conservative:
+  // treat every v4-mapped address as needs-check and refuse regardless of
+  // the embedded IPv4's class. This is the correct stance for an SSRF guard
+  // — a public v4 wrapped in v6 is rare in client input and the risk of a
+  // misclassified loopback (e.g. [::ffff:7f00:1]) dwarfs the false-positive
+  // cost.
+  if (/^::ffff:/i.test(inner)) return true;
+  // IPv4-compatible IPv6 (deprecated, ::0:0:0:0:a.b.c.d) — likewise refuse.
+  if (/^::[0-9a-f]/i.test(inner) && inner !== "::1" && inner !== "::") return true;
   // fc00::/7 = ULA (fc00..fdff)
   if (/^fc[0-9a-f]{2}:/.test(inner) || /^fd[0-9a-f]{2}:/.test(inner)) return true;
   // fe80::/10 = link-local (fe80..febf)
@@ -138,7 +148,9 @@ export function isPrivateHost(hostname: string): boolean {
   if (PRIVATE_HOSTNAME_LITERALS.has(lower)) return true;
   if (lower.endsWith(".localhost")) return true;
   if (isIPv4Literal(lower)) {
-    return isPrivateIPv4(parseIPv4(lower)!);
+    const octets = parseIPv4(lower);
+    if (octets === null) return false;
+    return isPrivateIPv4(octets);
   }
   if (isIPv6Literal(lower)) {
     return isPrivateIPv6(lower);

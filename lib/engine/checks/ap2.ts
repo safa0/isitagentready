@@ -107,6 +107,29 @@ export async function checkAp2(ctx: ScanContext): Promise<CheckResult> {
   const started = Date.now();
 
   const a2a = ctx.a2aAgentCard;
+
+  // When the orchestrator didn't run the a2a check (caller excluded it or
+  // it is opt-in-by-default), AP2 cannot truthfully claim a negative — we
+  // just didn't look. Emit a neutral "skipped" verdict so scoring and
+  // level gates don't count this against the site.
+  if (a2a === null && !ctx.a2aAgentCardEnabled) {
+    const skippedMessage = "Skipped: requires a2aAgentCard to be enabled.";
+    const evidence: EvidenceStep[] = [
+      makeStep("conclude", CONCLUDE_LABEL, {
+        outcome: "neutral",
+        summary: skippedMessage,
+      }),
+    ];
+    // The commerce gate would force neutral + a site suffix, but "skipped"
+    // is already the right answer regardless of isCommerce.
+    return {
+      status: "neutral",
+      message: skippedMessage,
+      evidence,
+      durationMs: Date.now() - started,
+    };
+  }
+
   const cardMissing = a2a === null || a2a.status !== "pass";
 
   if (cardMissing) {

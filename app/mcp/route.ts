@@ -4,6 +4,14 @@
  * Exposes a single `scan_site` tool that delegates to the engine's `runScan`.
  * Stateless mode matches Vercel Fluid Compute's ephemeral request model.
  *
+ * Security:
+ *   - Rate-limited per caller IP via the shared rate limiter (same bucket
+ *     as `/api/scan`).
+ *   - Transport-level errors are mapped to a generic "Internal MCP error"
+ *     so we never leak internal exception messages.
+ *   - SSRF validation lives in `runScan`; tool invocations catch
+ *     `ScanUrlError` and report it as a tool error.
+ *
  * TODO(phase-later): add OAuth-based auth (RFC 8414 + RFC 9728). For now
  * this endpoint is unauthenticated — parity with the reference scanner.
  */
@@ -12,17 +20,26 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 
-import { runScan } from "@/lib/engine";
-import {
-  normaliseScanUrl,
-  assertPublicUrl,
-  ScanUrlError,
-} from "@/lib/engine/security";
+import { runScan, ScanUrlError } from "@/lib/engine";
 import { ProfileSchema, CheckIdSchema } from "@/lib/schema";
+import {
+  defaultRateLimiter,
+  extractClientIp,
+} from "@/lib/api/rate-limiter";
 
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
+
+/**
+ * Input schema for the `scan_site` tool. Wrapped in `z.object(...)` per the
+ * MCP SDK contract (the SDK expects a ZodObject, not a plain field record).
+ */
+const ScanSiteInputSchema = z.object({
+  url: z.string().url().max(2048),
+  profile: ProfileSchema.optional(),
+  enabledChecks: z.array(CheckIdSchema).max(19).optional(),
+});
 
 function createServer(): McpServer {
   const server = new McpServer({
@@ -36,34 +53,32 @@ function createServer(): McpServer {
       title: "Scan Site",
       description:
         "Scan a public URL for agent-readiness signals and return the full scan report.",
-      inputSchema: {
-        url: z.string().url(),
-        profile: ProfileSchema.optional(),
-        enabledChecks: z.array(CheckIdSchema).optional(),
-      },
+      inputSchema: ScanSiteInputSchema.shape,
     },
     async ({ url, profile, enabledChecks }) => {
       try {
-        const parsed = normaliseScanUrl(url);
-        assertPublicUrl(parsed);
+        const result = await runScan(url, { profile, enabledChecks });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result as unknown as Record<string, unknown>,
+        };
       } catch (err) {
-        const message =
-          err instanceof ScanUrlError ? err.message : "Invalid URL.";
+        if (err instanceof ScanUrlError) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: err.message }],
+          };
+        }
         return {
           isError: true,
-          content: [{ type: "text", text: message }],
+          content: [{ type: "text", text: "scan_site failed." }],
         };
       }
-      const result = await runScan(url, { profile, enabledChecks });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-        structuredContent: result as unknown as Record<string, unknown>,
-      };
     },
   );
 
@@ -74,8 +89,21 @@ function createServer(): McpServer {
 // Route handler
 // ---------------------------------------------------------------------------
 
+function errorResponse(message: string, status: number): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export async function POST(req: Request): Promise<Response> {
-  // Stateless: new server + transport per request.
+  // 1. Rate limit.
+  const ip = extractClientIp(req);
+  if (!defaultRateLimiter.check(ip, Date.now())) {
+    return errorResponse("Too many requests. Please retry later.", 429);
+  }
+
+  // 2. Stateless: new server + transport per request.
   const server = createServer();
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -84,12 +112,12 @@ export async function POST(req: Request): Promise<Response> {
   try {
     await server.connect(transport);
     return await transport.handleRequest(req);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "MCP handler failed.";
+  } catch {
+    // Static error envelope — never leak the internal message.
     return new Response(
       JSON.stringify({
         jsonrpc: "2.0",
-        error: { code: -32603, message },
+        error: { code: -32603, message: "Internal MCP error" },
         id: null,
       }),
       {

@@ -17,7 +17,10 @@ import { runScan } from "@/lib/engine/index";
 import {
   ScanResponseSchema,
   type CheckId,
+  type CheckResult,
+  type ChecksBlock,
 } from "@/lib/schema";
+import { ALL_SITES, loadOracle } from "./_helpers/oracle";
 
 function fallbackFetch(): typeof fetch {
   const fn: typeof fetch = async () => {
@@ -150,5 +153,210 @@ describe("runScan - level + score computation", () => {
     expect(res.level).toBe(0);
     expect(res.levelName).toBe("Not Ready");
     expect(res.nextLevel).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H9 — shared probe memo: only ONE homepage fetch per runScan, even though
+// the orchestrator creates two ScanContexts (pre-commerce and widened).
+// ---------------------------------------------------------------------------
+
+describe("runScan - shared probes (H9)", () => {
+  it("issues a single shared-homepage fetch across the two-context pipeline", async () => {
+    const homepageUrl = "https://shared-probes.test/";
+    // Track fetches by (url, accept-header) so we can separate the memoised
+    // homepage probe from markdown-negotiation's distinct re-request.
+    const homepageHits: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : (input as Request).url;
+      if (url === homepageUrl) {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        const accept = headers["accept"] ?? headers["Accept"] ?? "";
+        homepageHits.push(accept);
+        return new Response("<html></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response("", { status: 404 });
+    };
+    await runScan("https://shared-probes.test", { fetchImpl });
+    // Expect exactly one shared homepage probe (no Accept override) and
+    // one markdownNegotiation probe (Accept: text/markdown). Two contexts
+    // share the same probe promise so the former only fires once.
+    const sharedProbeHits = homepageHits.filter(
+      (accept) => !/markdown/i.test(accept),
+    );
+    expect(sharedProbeHits).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H10 — oracle replay: for each captured fixture, build a fetch stub from the
+// per-check evidence and assert that runScan round-trips level + levelName +
+// per-check status against the oracle. Score gaps are separately covered by
+// TODO(#6); here we only assert the stable surface that's deterministic
+// under our implementation.
+// ---------------------------------------------------------------------------
+
+type CategoryKey = keyof ChecksBlock;
+
+interface OracleCheckEntry {
+  readonly status: CheckResult["status"];
+  readonly message: string;
+}
+
+function collectOracleFetches(oracle: unknown): Map<string, {
+  status: number;
+  statusText?: string;
+  headers?: Record<string, string>;
+  body: string;
+}> {
+  const map = new Map<string, {
+    status: number;
+    statusText?: string;
+    headers?: Record<string, string>;
+    body: string;
+  }>();
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (node !== null && typeof node === "object") {
+      const obj = node as Record<string, unknown>;
+      const action = obj["action"];
+      const request = obj["request"] as { url?: string } | undefined;
+      const response = obj["response"] as
+        | { status?: number; statusText?: string; headers?: Record<string, string>; bodyPreview?: string }
+        | undefined;
+      if (
+        action === "fetch" &&
+        request !== undefined &&
+        response !== undefined &&
+        typeof request.url === "string" &&
+        typeof response.status === "number"
+      ) {
+        // First-seen wins; oracle often records the same URL under multiple
+        // checks with identical responses.
+        if (!map.has(request.url)) {
+          // Reconstruct body from preview. Truncated previews end with "..."
+          // — we duplicate the head to guarantee our 500-char preview
+          // survives untouched (matches _helpers/oracle.ts bodyFromPreview).
+          const preview = response.bodyPreview ?? "";
+          let body = preview;
+          if (preview.endsWith("...") && preview.length > 500) {
+            body = preview.slice(0, 500) + preview.slice(0, 500);
+          }
+          map.set(request.url, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+            body,
+          });
+        }
+      }
+      Object.values(obj).forEach(walk);
+    }
+  };
+  walk(oracle);
+  return map;
+}
+
+function buildOracleFetchStub(oracle: unknown): typeof fetch {
+  const fetches = collectOracleFetches(oracle);
+  // Register trailing-slash aliases so `${origin}` and `${origin}/` both hit.
+  for (const [url, entry] of Array.from(fetches.entries())) {
+    if (url.endsWith("/")) {
+      const without = url.slice(0, -1);
+      if (!fetches.has(without)) fetches.set(without, entry);
+    } else {
+      const withSlash = url + "/";
+      // Only alias homepage-like URLs (no path). Otherwise /foo ≠ /foo/.
+      try {
+        const parsed = new URL(url);
+        if (parsed.pathname === "") {
+          if (!fetches.has(withSlash)) fetches.set(withSlash, entry);
+        }
+      } catch {
+        // Ignore malformed URLs — they stay unaliased.
+      }
+    }
+  }
+  return async (input) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : (input as Request).url;
+    const entry = fetches.get(url);
+    if (entry === undefined) {
+      // Paths not present in the oracle (e.g. HEAD probes we issue on
+      // commerce-signal URL candidates) default to 404 — the oracle's
+      // scanner also treated missing probes as negative.
+      return new Response("", { status: 404, statusText: "Not Found" });
+    }
+    return new Response(entry.body, {
+      status: entry.status,
+      statusText: entry.statusText ?? "OK",
+      headers: entry.headers ?? {},
+    });
+  };
+}
+
+describe("runScan - oracle fixture replay (H10)", () => {
+  for (const site of ALL_SITES) {
+    it(`round-trips ${site} oracle schema + shape`, async () => {
+      const fixture = loadOracle(site);
+      const fetchImpl = buildOracleFetchStub(fixture.raw);
+      const result = await runScan(fixture.url, { fetchImpl });
+      // Schema round-trip
+      expect(ScanResponseSchema.safeParse(result).success).toBe(true);
+      // Note: `isCommerce` round-trips only when the oracle homepage body
+      // contains the platform tokens within the bodyPreview cap. Platform
+      // evidence (e.g. Shopify CDN script) often lives past the 500-char
+      // cap so our reconstruction can't reliably reproduce it. Assert the
+      // field exists rather than demanding oracle parity.
+      expect(typeof result.isCommerce).toBe("boolean");
+
+      // Walk categories and assert every oracle check id is present in
+      // our response with a well-formed status. Exact per-check status
+      // parity requires full body replay (see TODO(#6) — body previews
+      // are truncated in fixtures and our reconstruction is lossy), so
+      // we only assert the response SHAPE is aligned with the oracle.
+      const expectedChecks = fixture.raw.checks as Record<
+        CategoryKey,
+        Record<string, OracleCheckEntry>
+      >;
+      const actualChecks = result.checks;
+      for (const cat of Object.keys(expectedChecks) as CategoryKey[]) {
+        const expected = expectedChecks[cat];
+        const actual = actualChecks[cat] as Record<string, CheckResult>;
+        for (const id of Object.keys(expected)) {
+          const act = actual[id];
+          expect(act, `${site} ${cat}.${id}`).toBeDefined();
+          if (act === undefined) continue;
+          expect(["pass", "fail", "neutral"]).toContain(act.status);
+        }
+      }
+    });
+  }
+
+  it("asserts level + levelName parity where full body replay succeeds (example baseline)", async () => {
+    // The example.com fixture has a level-0 baseline with no passes — the
+    // only determinstic fixture that survives body-preview lossiness end
+    // to end. The other 4 fixtures' level values require exact-body parity,
+    // blocked by TODO(#6).
+    const fixture = loadOracle("example");
+    const fetchImpl = buildOracleFetchStub(fixture.raw);
+    const result = await runScan(fixture.url, { fetchImpl });
+    expect(result.level).toBe(fixture.raw.level);
+    expect(result.levelName).toBe(fixture.raw.levelName);
   });
 });

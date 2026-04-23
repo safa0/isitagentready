@@ -3,15 +3,17 @@
  *
  * Responsibilities:
  *   1. Zod-validate the request body against `ScanRequestSchema`.
- *   2. Run SSRF guard on the submitted URL.
- *   3. Rate-limit per client IP (simple in-memory token bucket).
- *   4. Apply a 60s timeout to the scan.
- *   5. Return JSON (default) or text/markdown (`format: "agent"`).
+ *   2. Rate-limit per client IP via the shared rate limiter.
+ *   3. Apply a scan-wide timeout (cancels in-flight fetches via AbortSignal).
+ *   4. Return JSON (default) or text/markdown (`format: "agent"`).
  *
- * This route is stateless from the client's perspective but holds a small
- * per-IP counter in process memory. That's fine for a single-instance Vercel
- * Fluid Compute deployment — if the app ever fans out, replace the in-memory
- * limiter with a Redis / Upstash backend.
+ * SSRF validation lives inside `runScan` — we catch `ScanUrlError` here to
+ * return a 400 without re-running the guard in the route (defence in depth
+ * still holds: the engine re-validates every redirect hop).
+ *
+ * Rate limiting is shared with the MCP route via `lib/api/rate-limiter.ts`;
+ * the same in-process bucket governs both endpoints so a caller cannot
+ * double their budget by rotating transports.
  */
 
 import { NextResponse } from "next/server";
@@ -20,72 +22,92 @@ import {
   ScanRequestSchema,
   type ScanResponse,
 } from "@/lib/schema";
-import { runScan } from "@/lib/engine";
-import {
-  normaliseScanUrl,
-  assertPublicUrl,
-  ScanUrlError,
-} from "@/lib/engine/security";
+import { runScan, ScanUrlError } from "@/lib/engine";
 import { getAgentReport } from "@/lib/engine/prompts";
+import {
+  defaultRateLimiter,
+  extractClientIp,
+} from "@/lib/api/rate-limiter";
 
 // ---------------------------------------------------------------------------
-// Rate limiter (per-IP token bucket)
+// Constants
 // ---------------------------------------------------------------------------
 
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 10;
-const SCAN_TIMEOUT_MS = 60_000;
+/** Vercel Fluid Compute hard cap is 30s; we leave a small reserve. */
+const SCAN_TIMEOUT_MS = 25_000;
+/** Reject bodies larger than this before parsing. */
+const MAX_BODY_BYTES = 16 * 1024;
 
-interface Bucket {
-  count: number;
-  resetAt: number;
-}
+// ---------------------------------------------------------------------------
+// Test hook (kept for existing route spec)
+// ---------------------------------------------------------------------------
 
-const buckets = new Map<string, Bucket>();
-
-/**
- * Token-bucket check. Returns `true` when the caller is allowed to proceed.
- * Implementation notes:
- *   - Buckets are per-IP; the key is derived from `x-forwarded-for`.
- *   - Buckets reset fully when the window elapses (simpler than token drip).
- *   - The map grows unbounded in worst case, but stale entries are lazily
- *     evicted on access.
- */
-function checkRateLimit(key: string, now: number): boolean {
-  const bucket = buckets.get(key);
-  if (bucket === undefined || now >= bucket.resetAt) {
-    buckets.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-    return true;
-  }
-  if (bucket.count >= RATE_LIMIT_MAX_REQUESTS) return false;
-  bucket.count += 1;
-  return true;
-}
-
-/** Test hook: clears the bucket map. Not exported from the module manifest. */
 export function __resetRateLimiter(): void {
-  buckets.clear();
-}
-
-function extractClientIp(req: Request): string {
-  const forwarded = req.headers.get("x-forwarded-for") ?? "";
-  const first = forwarded.split(",")[0]?.trim();
-  if (first !== undefined && first.length > 0) return first;
-  const realIp = req.headers.get("x-real-ip");
-  if (realIp !== null && realIp.length > 0) return realIp;
-  return "unknown";
+  defaultRateLimiter.reset();
 }
 
 // ---------------------------------------------------------------------------
-// Handler
+// Helpers
 // ---------------------------------------------------------------------------
 
 function errorResponse(message: string, status: number): NextResponse {
   return NextResponse.json({ error: message }, { status });
 }
 
+async function readBodyCapped(
+  req: Request,
+  maxBytes: number,
+): Promise<string> {
+  // Fast pre-check using Content-Length when advertised.
+  const advertised = req.headers.get("content-length");
+  if (advertised !== null) {
+    const n = Number.parseInt(advertised, 10);
+    if (Number.isFinite(n) && n > maxBytes) {
+      throw new PayloadTooLargeError(
+        `Request body exceeds ${maxBytes} bytes.`,
+      );
+    }
+  }
+  const body = req.body;
+  if (body === null) return "";
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let received = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        await reader.cancel();
+        throw new PayloadTooLargeError(
+          `Request body exceeds ${maxBytes} bytes.`,
+        );
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // releaseLock throws if already closed.
+    }
+  }
+}
+
+class PayloadTooLargeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PayloadTooLargeError";
+  }
+}
+
 async function parseBody(req: Request): Promise<unknown> {
-  const text = await req.text();
+  const text = await readBodyCapped(req, MAX_BODY_BYTES);
   if (text.length === 0) return null;
   try {
     return JSON.parse(text);
@@ -94,32 +116,15 @@ async function parseBody(req: Request): Promise<unknown> {
   }
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Scan timed out after ${timeoutMs}ms.`));
-    }, timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
 
 export async function POST(req: Request): Promise<Response> {
   // 1. Rate limit.
   const ip = extractClientIp(req);
   const now = Date.now();
-  if (!checkRateLimit(ip, now)) {
+  if (!defaultRateLimiter.check(ip, now)) {
     return errorResponse("Too many requests. Please retry later.", 429);
   }
 
@@ -128,6 +133,9 @@ export async function POST(req: Request): Promise<Response> {
   try {
     body = await parseBody(req);
   } catch (err) {
+    if (err instanceof PayloadTooLargeError) {
+      return errorResponse(err.message, 413);
+    }
     const message = err instanceof SyntaxError ? err.message : "Invalid body.";
     return errorResponse(message, 400);
   }
@@ -141,35 +149,35 @@ export async function POST(req: Request): Promise<Response> {
     return errorResponse(message, 400);
   }
 
-  // 3. SSRF guard.
-  let url: URL;
-  try {
-    url = normaliseScanUrl(parsed.data.url);
-    assertPublicUrl(url);
-  } catch (err) {
-    const message = err instanceof ScanUrlError ? err.message : "Invalid URL.";
-    return errorResponse(message, 400);
-  }
+  // 3. Run scan with scan-wide timeout. The AbortController propagates into
+  // every fetch via the context's composed signal, so a timeout really
+  // cancels outstanding work instead of letting it orphan.
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Scan timed out after ${SCAN_TIMEOUT_MS}ms.`));
+  }, SCAN_TIMEOUT_MS);
 
-  // 4. Run scan with timeout.
   let result: ScanResponse;
   try {
-    result = await withTimeout(
-      runScan(url.toString(), {
-        profile: parsed.data.profile,
-        enabledChecks: parsed.data.enabledChecks,
-      }),
-      SCAN_TIMEOUT_MS,
-    );
+    result = await runScan(parsed.data.url, {
+      profile: parsed.data.profile,
+      enabledChecks: parsed.data.enabledChecks,
+      signal: controller.signal,
+    });
   } catch (err) {
-    // Deliberately opaque: do not leak internal state.
-    if (err instanceof Error && /timed out/i.test(err.message)) {
+    if (err instanceof ScanUrlError) {
+      return errorResponse(err.message, 400);
+    }
+    if (controller.signal.aborted) {
       return errorResponse("Scan timed out.", 504);
     }
+    // Deliberately opaque: do not leak internal state.
     return errorResponse("Scan failed.", 500);
+  } finally {
+    clearTimeout(timer);
   }
 
-  // 5. Format response.
+  // 4. Format response.
   if (parsed.data.format === "agent") {
     const body = getAgentReport({
       url: result.url,

@@ -23,6 +23,7 @@ import type {
   EvidenceStep,
   FindingOutcome,
 } from "@/lib/schema";
+import { normaliseScanUrl, assertPublicUrl } from "@/lib/engine/security";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,9 +46,40 @@ export const BODY_PREVIEW_MAX_CHARS = 500;
 /** Suffix appended to a truncated preview. */
 export const BODY_PREVIEW_TRUNCATED_SUFFIX = "...";
 
+/**
+ * Hard cap on retained response body bytes per fetch. The truncated body is
+ * used only for preview + small-envelope parsing (JSON configs, robots.txt,
+ * sitemap fragments). Megabyte-scale HTML pages are both unnecessary and a
+ * memory amplification vector if an attacker controls the origin.
+ */
+export const RESPONSE_BODY_MAX_BYTES = 1_048_576; // 1 MiB
+
+/** Maximum redirect hops we are willing to follow (per-scan). */
+export const MAX_REDIRECT_HOPS = 3;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
+
+/**
+ * Shared promise memo for the two probes that many checks reuse. The
+ * orchestrator creates one record per scan and passes it to every
+ * `createScanContext` call so a context widening round (e.g. setting
+ * `isCommerce`) doesn't discard already-in-flight fetches.
+ *
+ * Writes are performed lazily: each context's `getHomepage` / `getRobotsTxt`
+ * reads the record first and, on `null`, starts the fetch and stores the
+ * promise back into the record. Concurrent callers across contexts all
+ * await the same promise.
+ */
+export interface SharedProbes {
+  homepage: Promise<FetchOutcome> | null;
+  robots: Promise<FetchOutcome> | null;
+}
+
+export function createSharedProbes(): SharedProbes {
+  return { homepage: null, robots: null };
+}
 
 export interface ScanContextOptions {
   /** Origin to scan. Only the origin is preserved; path/search/hash discarded. */
@@ -71,6 +103,24 @@ export interface ScanContextOptions {
    * scan context is created before the a2a probe runs.
    */
   readonly a2aAgentCard?: CheckResult | null;
+  /**
+   * Orchestrator signal used to cancel in-flight fetches on scan timeout or
+   * explicit abort. Composed with each fetch's own per-request timeout via
+   * `AbortSignal.any`.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Shared homepage/robots probe memo. When omitted the context creates a
+   * private record — acceptable for one-off tests, suboptimal for the
+   * orchestrator which creates two contexts per scan.
+   */
+  readonly sharedProbes?: SharedProbes;
+  /**
+   * Was the `a2aAgentCard` check explicitly enabled for this scan? Used by
+   * dependent checks (notably `ap2`) to distinguish "we couldn't prove it"
+   * from "we weren't allowed to look".
+   */
+  readonly a2aAgentCardEnabled?: boolean;
 }
 
 export interface FetchRequestRecord {
@@ -112,6 +162,8 @@ export interface ScanContext {
   readonly isCommerce: boolean;
   /** The `a2aAgentCard` check result from the same scan (null if not run). */
   readonly a2aAgentCard: CheckResult | null;
+  /** Was the a2aAgentCard check explicitly enabled? (differentiates opt-out from absent). */
+  readonly a2aAgentCardEnabled: boolean;
   /** Resolve an absolute URL or site-relative path against the scan origin. */
   resolve(pathOrUrl: string): URL;
   /** Perform a single fetch and return a standardised outcome record. */
@@ -195,6 +247,88 @@ function normaliseOrigin(input: URL | string): URL {
   return new URL(raw.origin);
 }
 
+/**
+ * Compose an AbortSignal that fires on whichever trigger arrives first:
+ * the caller-provided cancellation (scan-wide) or the per-request timeout.
+ * We avoid `AbortSignal.any` for broader runtime compatibility.
+ */
+function composeSignals(
+  external: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(
+      new Error(`Request timed out after ${timeoutMs}ms.`),
+    );
+  }, timeoutMs);
+  // Clean up the timer as soon as anyone signals abort, so we don't leak it.
+  controller.signal.addEventListener("abort", () => clearTimeout(timer), {
+    once: true,
+  });
+  if (external !== undefined) {
+    if (external.aborted) {
+      clearTimeout(timer);
+      controller.abort(external.reason);
+    } else {
+      external.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          controller.abort(external.reason);
+        },
+        { once: true },
+      );
+    }
+  }
+  return controller.signal;
+}
+
+/**
+ * Read the response body with a hard byte cap. Anything beyond the cap is
+ * discarded and the reader is cancelled so the connection can be released.
+ * We return the decoded text (capped) plus a flag indicating truncation.
+ */
+async function readBodyCapped(
+  res: Response,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const body = res.body;
+  if (body === null) return { text: "", truncated: false };
+  const reader = body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let received = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      const remaining = maxBytes - received;
+      if (remaining <= 0) {
+        await reader.cancel();
+        return { text: text + decoder.decode(), truncated: true };
+      }
+      const chunk = value.byteLength <= remaining ? value : value.slice(0, remaining);
+      text += decoder.decode(chunk, { stream: true });
+      received += chunk.byteLength;
+      if (value.byteLength > remaining) {
+        await reader.cancel();
+        return { text: text + decoder.decode(), truncated: true };
+      }
+    }
+    text += decoder.decode();
+    return { text, truncated: false };
+  } finally {
+    // Ensure the reader is released even on unexpected errors.
+    try {
+      reader.releaseLock();
+    } catch {
+      // releaseLock throws if already closed; nothing to do.
+    }
+  }
+}
+
 async function performFetch(
   input: URL,
   init: RequestInit,
@@ -202,15 +336,53 @@ async function performFetch(
   fetchImpl: typeof fetch,
   now: () => number,
   requestRecord: FetchRequestRecord,
+  externalSignal: AbortSignal | undefined,
 ): Promise<FetchOutcome> {
   const started = now();
-  const signal = AbortSignal.timeout(timeoutMs);
+  const signal = composeSignals(externalSignal, timeoutMs);
   try {
-    const res = await fetchImpl(input, { ...init, signal });
+    let res = await fetchImpl(input, { ...init, signal, redirect: "manual" });
+    let hops = 0;
+    // Manual redirect handling: validate each Location against the SSRF
+    // guard so an attacker can't bounce the scanner to a private host.
+    while (res.status >= 300 && res.status < 400 && hops < MAX_REDIRECT_HOPS) {
+      const location = res.headers.get("location");
+      if (location === null) break;
+      let nextUrl: URL;
+      try {
+        nextUrl = normaliseScanUrl(new URL(location, input).toString());
+        assertPublicUrl(nextUrl);
+      } catch (err) {
+        const error =
+          err instanceof Error ? err.message : "Redirect target rejected.";
+        return {
+          request: requestRecord,
+          error: `Redirect blocked: ${error}`,
+          durationMs: now() - started,
+        };
+      }
+      // Drain the redirect response body so the connection can be reused.
+      try {
+        await res.arrayBuffer();
+      } catch {
+        // Ignore; we're about to issue another fetch.
+      }
+      hops += 1;
+      res = await fetchImpl(nextUrl, { ...init, signal, redirect: "manual" });
+    }
+    if (res.status >= 300 && res.status < 400 && hops >= MAX_REDIRECT_HOPS) {
+      return {
+        request: requestRecord,
+        error: `Too many redirects (>${MAX_REDIRECT_HOPS}).`,
+        durationMs: now() - started,
+      };
+    }
+
     let body = "";
     let readError: string | undefined;
     try {
-      body = await res.text();
+      const read = await readBodyCapped(res, RESPONSE_BODY_MAX_BYTES);
+      body = read.text;
     } catch (err) {
       readError = err instanceof Error ? err.message : String(err);
     }
@@ -256,8 +428,8 @@ export function createScanContext(options: ScanContextOptions): ScanContext {
     );
   }
 
-  let homepagePromise: Promise<FetchOutcome> | null = null;
-  let robotsPromise: Promise<FetchOutcome> | null = null;
+  const probes: SharedProbes = options.sharedProbes ?? createSharedProbes();
+  const externalSignal = options.signal;
 
   function resolve(pathOrUrl: string): URL {
     return new URL(pathOrUrl, url);
@@ -281,7 +453,10 @@ export function createScanContext(options: ScanContextOptions): ScanContext {
     const init: RequestInit = {
       method,
       headers: mergedHeaders,
-      redirect: "follow",
+      // `redirect: "manual"` is enforced inside performFetch so we can
+      // validate each hop against the SSRF guard. Setting it here is
+      // redundant but harmless.
+      redirect: "manual",
       ...(opts.body !== undefined ? { body: opts.body } : {}),
     };
     return performFetch(
@@ -291,21 +466,22 @@ export function createScanContext(options: ScanContextOptions): ScanContext {
       fetchImpl,
       now,
       requestRecord,
+      externalSignal,
     );
   }
 
   function getHomepage(): Promise<FetchOutcome> {
-    if (homepagePromise === null) {
-      homepagePromise = doFetch("/");
+    if (probes.homepage === null) {
+      probes.homepage = doFetch("/");
     }
-    return homepagePromise;
+    return probes.homepage;
   }
 
   function getRobotsTxt(): Promise<FetchOutcome> {
-    if (robotsPromise === null) {
-      robotsPromise = doFetch("/robots.txt");
+    if (probes.robots === null) {
+      probes.robots = doFetch("/robots.txt");
     }
-    return robotsPromise;
+    return probes.robots;
   }
 
   return Object.freeze({
@@ -315,6 +491,7 @@ export function createScanContext(options: ScanContextOptions): ScanContext {
     timeoutMs,
     isCommerce: options.isCommerce ?? false,
     a2aAgentCard: options.a2aAgentCard ?? null,
+    a2aAgentCardEnabled: options.a2aAgentCardEnabled ?? false,
     resolve,
     fetch: doFetch,
     getHomepage,

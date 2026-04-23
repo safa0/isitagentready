@@ -216,9 +216,11 @@ export type ScanResponse = z.infer<typeof ScanResponseSchema>;
 // ---------------------------------------------------------------------------
 
 export const ScanRequestSchema = z.object({
-  url: z.string().url(),
+  url: z.string().url().max(2048),
   profile: ProfileSchema.optional(),
-  enabledChecks: z.array(CheckIdSchema).optional(),
+  // There are 19 canonical check ids; cap at 19 so an attacker can't ship
+  // a megabyte-long check list that the scheduler then iterates over.
+  enabledChecks: z.array(CheckIdSchema).max(19).optional(),
   format: z.literal("agent").optional(),
 });
 export type ScanRequest = z.infer<typeof ScanRequestSchema>;

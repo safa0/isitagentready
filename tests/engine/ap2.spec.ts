@@ -70,12 +70,17 @@ const NOOP_FETCH: typeof fetch = async () =>
 function ctxWith(opts: {
   readonly isCommerce: boolean;
   readonly a2aAgentCard: CheckResult | null;
+  readonly a2aAgentCardEnabled?: boolean;
 }) {
   return createScanContext({
     url: "https://example.test",
     fetchImpl: NOOP_FETCH,
     isCommerce: opts.isCommerce,
     a2aAgentCard: opts.a2aAgentCard,
+    // Default to `true` so the legacy "a2a=null ⇒ fail" tests still exercise
+    // the "we looked and nothing came back" path. New specs set this
+    // explicitly to `false` to exercise the skipped semantics.
+    a2aAgentCardEnabled: opts.a2aAgentCardEnabled ?? true,
   });
 }
 
@@ -151,6 +156,34 @@ describe("ap2 — gating across origins", () => {
       expect(result.message).toBe(oracle.message);
     },
   );
+});
+
+describe("ap2 — a2aAgentCard not enabled", () => {
+  it("reports neutral/skipped when a2a is not enabled and no card is supplied", async () => {
+    const result = await checkAp2(
+      ctxWith({
+        isCommerce: true,
+        a2aAgentCard: null,
+        a2aAgentCardEnabled: false,
+      }),
+    );
+    expect(result.status).toBe("neutral");
+    expect(result.message).toMatch(/Skipped: requires a2aAgentCard/);
+    expect(result.evidence).toHaveLength(1);
+    expect(result.evidence[0]?.finding.outcome).toBe("neutral");
+  });
+
+  it("does not append the commerce-site suffix to the skipped message", async () => {
+    const result = await checkAp2(
+      ctxWith({
+        isCommerce: false,
+        a2aAgentCard: null,
+        a2aAgentCardEnabled: false,
+      }),
+    );
+    expect(result.status).toBe("neutral");
+    expect(result.message).not.toMatch(/not a commerce site/);
+  });
 });
 
 describe("ap2 — non-commerce gating", () => {

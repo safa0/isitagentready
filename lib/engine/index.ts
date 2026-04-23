@@ -22,19 +22,25 @@ import type {
 } from "@/lib/schema";
 import {
   createScanContext,
+  createSharedProbes,
   type ScanContext,
 } from "@/lib/engine/context";
 import { detectCommerce } from "@/lib/engine/commerce-signals";
 import {
   normaliseScanUrl,
   assertPublicUrl,
+  ScanUrlError,
 } from "@/lib/engine/security";
 import {
+  ALL_CHECK_IDS,
   DEFAULT_ENABLED_CHECKS,
-  scoreScan,
 } from "@/lib/engine/scoring";
 import { determineLevel } from "@/lib/engine/levels";
 import { getRequirement } from "@/lib/engine/prompts";
+
+// Re-export so API/MCP routes can discriminate SSRF errors from generic
+// engine failures without importing `lib/engine/security.ts` directly.
+export { ScanUrlError };
 
 import { checkRobotsTxt } from "@/lib/engine/checks/robots-txt";
 import { checkSitemap } from "@/lib/engine/checks/sitemap";
@@ -67,6 +73,11 @@ export interface RunScanOptions {
   readonly fetchImpl?: typeof fetch;
   /** Hard cap for the whole scan, in ms. Defaults to 60_000. */
   readonly timeoutMs?: number;
+  /**
+   * Optional cancellation signal. When aborted every in-flight probe is
+   * cancelled. Consumed by the HTTP route's timeout handling.
+   */
+  readonly signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +175,29 @@ function buildNextLevel(
 // runScan
 // ---------------------------------------------------------------------------
 
+/**
+ * `a2aAgentCard` is pre-run before commerce widening so `ap2` can read the
+ * result off the context. Every other check is eligible for parallel dispatch.
+ */
+const PRE_RUN_IDS: ReadonlySet<CheckId> = new Set<CheckId>(["a2aAgentCard"]);
+const PARALLEL_IDS: readonly CheckId[] = ALL_CHECK_IDS.filter(
+  (id) => !PRE_RUN_IDS.has(id),
+);
+
+async function safeDetectCommerce(
+  ctx: ScanContext,
+): Promise<{ isCommerce: boolean; commerceSignals: readonly string[] }> {
+  try {
+    return await detectCommerce(ctx);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // The commerce heuristic is advisory. A throwing detector must not
+    // abort the entire scan — fall back to "not commerce" and log.
+    console.error("[runScan] detectCommerce failed:", message);
+    return { isCommerce: false, commerceSignals: [] };
+  }
+}
+
 export async function runScan(
   url: string,
   opts: RunScanOptions = {},
@@ -172,19 +206,27 @@ export async function runScan(
   assertPublicUrl(parsed);
 
   const enabled = resolveEnabledChecks(opts);
+  const a2aEnabled = enabled.includes("a2aAgentCard");
+
+  // Shared probe memo so the pre-run and widened contexts share a single
+  // in-flight homepage/robots fetch each.
+  const sharedProbes = createSharedProbes();
 
   // First-pass context (isCommerce unknown, a2a not yet probed).
   const ctx0 = createScanContext({
     url: parsed,
     fetchImpl: opts.fetchImpl,
+    signal: opts.signal,
+    sharedProbes,
+    a2aAgentCardEnabled: a2aEnabled,
   });
 
-  // Step 1: detect commerce.
-  const commerce = await detectCommerce(ctx0);
+  // Step 1: detect commerce (guarded — advisory only).
+  const commerce = await safeDetectCommerce(ctx0);
 
   // Step 2: run a2aAgentCard first if it's enabled (ap2 depends on it).
   let a2aResult: CheckResult | null = null;
-  if (enabled.includes("a2aAgentCard")) {
+  if (a2aEnabled) {
     try {
       a2aResult = await checkA2aAgentCard(ctx0);
     } catch (err) {
@@ -198,58 +240,38 @@ export async function runScan(
     }
   }
 
-  // Step 3: widen context for the remaining checks.
+  // Step 3: widen context for the remaining checks, re-using the shared
+  // probe memo so the second pass hits the warm cache.
   const ctx = createScanContext({
     url: parsed,
     fetchImpl: opts.fetchImpl,
+    signal: opts.signal,
+    sharedProbes,
     isCommerce: commerce.isCommerce,
     a2aAgentCard: a2aResult,
+    a2aAgentCardEnabled: a2aEnabled,
   });
 
   // Step 4: run all remaining checks in parallel.
-  const ALL_IDS: readonly CheckId[] = [
-    "robotsTxt",
-    "sitemap",
-    "linkHeaders",
-    "markdownNegotiation",
-    "robotsTxtAiRules",
-    "contentSignals",
-    "webBotAuth",
-    "apiCatalog",
-    "oauthDiscovery",
-    "oauthProtectedResource",
-    "mcpServerCard",
-    "agentSkills",
-    "webMcp",
-    "x402",
-    "mpp",
-    "ucp",
-    "acp",
-    "ap2",
-  ];
-
   const pairs = await Promise.all(
-    ALL_IDS.map(async (id) => [id, await runCheck(id, ctx, enabled)] as const),
+    PARALLEL_IDS.map(
+      async (id) => [id, await runCheck(id, ctx, enabled)] as const,
+    ),
   );
 
   const results: Record<CheckId, CheckResult> = Object.create(null);
   for (const [id, r] of pairs) {
     results[id] = r;
   }
-  // a2aAgentCard is NOT in ALL_IDS (pre-run above). Plug in the pre-run
+  // a2aAgentCard is NOT in PARALLEL_IDS (pre-run above). Plug in the pre-run
   // result when present, otherwise fall back to the "skipped" neutral.
   results.a2aAgentCard = a2aResult ?? neutralSkipped();
 
-  // Step 5: scoring + level.
+  // Step 5: level calculation. Scoring is intentionally NOT computed here —
+  // the response schema (captured from the reference scanner) has no
+  // top-level score, so each consumer (UI / agent) calls `scoreScan`
+  // directly over `results` with the profile it needs.
   const levelOutcome = determineLevel(results);
-  const _score = scoreScan(results, {
-    isCommerce: commerce.isCommerce,
-    enabledChecks: enabled,
-  });
-  // NOTE: ScanResponseSchema (captured from the reference scanner) does not
-  // include a top-level `score` field — the UI derives it from the checks.
-  // We still expose it via computeCategoryScores / scoreScan for consumers.
-  void _score;
 
   // Step 6: compose the response.
   return {

@@ -86,29 +86,36 @@ function missingForLevel(
   return spec.increments.filter((id) => !isPass(results[id]));
 }
 
+const BASELINE_LEVEL: LevelSpec = {
+  level: 0,
+  name: "Not Ready",
+  increments: [],
+};
+
 export function determineLevel(
   results: Record<CheckId, CheckResult>,
 ): LevelOutcome {
-  let current: LevelSpec = LEVEL_TABLE[0]!;
-  for (let i = 1; i < LEVEL_TABLE.length; i++) {
-    const spec = LEVEL_TABLE[i]!;
+  // Walk the table in order. Baseline falls back to a constant so the type
+  // system is satisfied without a non-null assertion.
+  let current: LevelSpec = LEVEL_TABLE[0] ?? BASELINE_LEVEL;
+  for (const spec of LEVEL_TABLE.slice(1)) {
     const missing = missingForLevel(spec, results);
-    if (missing.length === 0) {
-      current = spec;
-    } else {
-      break;
-    }
+    if (missing.length > 0) break;
+    current = spec;
   }
 
-  if (current.level === 5) {
+  // Pick the next spec structurally: any entry with `level === current.level + 1`.
+  // This avoids an index-lookup branch for coverage while staying correct if
+  // the table is ever reordered or gapped.
+  const nextSpec =
+    LEVEL_TABLE.find((s) => s.level === current.level + 1) ?? null;
+  if (nextSpec === null) {
     return {
-      level: 5,
+      level: current.level,
       levelName: current.name,
       nextLevel: null,
     };
   }
-
-  const nextSpec = LEVEL_TABLE[current.level + 1]!;
   return {
     level: current.level,
     levelName: current.name,
