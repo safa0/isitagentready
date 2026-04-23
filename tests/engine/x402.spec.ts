@@ -114,6 +114,151 @@ describe("x402 — shopify oracle (isCommerce=true)", () => {
   });
 });
 
+describe("x402 — additional coverage", () => {
+  it("passes when the homepage returns 402", async () => {
+    const origin = "https://home402.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ x402Version: 1 }),
+      },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("passes when /api/v1 returns 402", async () => {
+    const origin = "https://v1.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: {
+        status: 402,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ x402Version: 1 }),
+      },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("records a bazaar failure summary when the bazaar transport errors", async () => {
+    const origin = "https://baz-err.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: new Error("ETIMEDOUT"),
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+    const bazaarStep = result.evidence[1]!;
+    expect(bazaarStep.finding.summary).toMatch(/Bazaar API request failed/);
+  });
+
+  it("records a non-200 bazaar summary when the bazaar returns 500", async () => {
+    const origin = "https://baz-500.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: { status: 500, headers: { "content-type": "text/plain" } },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+    const bazaarStep = result.evidence[1]!;
+    expect(bazaarStep.finding.summary).toBe("Bazaar API returned 500");
+  });
+
+  it("tolerates a bazaar body that is not valid JSON", async () => {
+    const origin = "https://baz-badjson.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: "not json",
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
+
+  it("counts a top-level bazaar array payload", async () => {
+    const origin = "https://arr.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([{ origin: "https://arr.test", resource: "/api" }]),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("counts a `resources`-keyed bazaar payload", async () => {
+    const origin = "https://res.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: { status: 200, body: "" },
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resources: [{ host: "res.test", resource: "/api" }],
+        }),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("records a transport-error finding when a homepage probe errors", async () => {
+    const origin = "https://home-err.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/`]: new Error("ECONNRESET"),
+      [BAZAAR_URL]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: nonMatchingBazaar(),
+      },
+      [`${origin}/api`]: { status: 404 },
+      [`${origin}/api/v1`]: { status: 404 },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkX402(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+    expect(result.evidence[0]!.finding.summary).toMatch(/request failed/);
+  });
+});
+
 describe("x402 — non-commerce gating", () => {
   it("returns neutral with suffix on a non-commerce site", async () => {
     const origin = "https://vercel.com";

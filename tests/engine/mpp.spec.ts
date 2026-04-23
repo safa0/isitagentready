@@ -81,6 +81,92 @@ describe("mpp — shopify oracle (isCommerce=true)", () => {
   });
 });
 
+describe("mpp — additional coverage", () => {
+  it("passes when x-payment-info is nested inside an array", async () => {
+    const origin = "https://arr.test";
+    const body = JSON.stringify({
+      openapi: "3.0.0",
+      servers: [{ url: "https://arr.test", "x-payment-info": {} }],
+    });
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/openapi.json`]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body,
+      },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkMpp(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("passes when x-payment-info is nested inside an operation", async () => {
+    const origin = "https://nested.test";
+    const body = JSON.stringify({
+      openapi: "3.0.0",
+      paths: {
+        "/pay": {
+          post: {
+            "x-payment-info": { amount: 100 },
+          },
+        },
+      },
+    });
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/openapi.json`]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body,
+      },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkMpp(ctx, { isCommerce: true });
+    expect(result.status).toBe("pass");
+  });
+
+  it("fails on a valid OpenAPI doc that has no x-payment-info", async () => {
+    const origin = "https://plain.test";
+    const body = JSON.stringify({ openapi: "3.0.0", paths: {} });
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/openapi.json`]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body,
+      },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkMpp(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
+
+  it("fails when openapi.json returns 200 with a non-JSON body", async () => {
+    const origin = "https://nonjson.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/openapi.json`]: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: "not json",
+      },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkMpp(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
+
+  it("fails on a 500 response", async () => {
+    const origin = "https://svr.test";
+    const { fetchImpl } = makeFetchStub({
+      [`${origin}/openapi.json`]: {
+        status: 500,
+        headers: { "content-type": "text/plain" },
+      },
+    });
+    const ctx = createScanContext({ url: origin, fetchImpl });
+    const result = await checkMpp(ctx, { isCommerce: true });
+    expect(result.status).toBe("fail");
+  });
+});
+
 describe("mpp — non-commerce gating", () => {
   it("returns neutral with suffix on a non-commerce site", async () => {
     const origin = "https://vercel.com";
