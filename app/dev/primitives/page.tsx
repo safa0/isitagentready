@@ -24,10 +24,31 @@ import cfDevRaw from "@/research/raw/scan-cf-dev.json" with { type: "json" };
 // render the page into the preview bundle).
 export const dynamic = "force-dynamic";
 
+function normalizeFixture(raw: unknown): unknown {
+  // The oracle fixtures are captured from live scans and may pre-date schema
+  // additions (e.g. per-check durationMs). Fill missing numeric fields with 0
+  // so the dev smoke route renders even if a fixture lags behind the schema.
+  if (raw === null || typeof raw !== "object") return raw;
+  const cloned = JSON.parse(JSON.stringify(raw)) as {
+    checks?: Record<string, Record<string, Record<string, unknown>>>;
+  };
+  const checks = cloned.checks;
+  if (checks) {
+    for (const cat of Object.values(checks)) {
+      for (const entry of Object.values(cat)) {
+        if (entry !== null && typeof entry === "object" && entry.durationMs === undefined) {
+          entry.durationMs = 0;
+        }
+      }
+    }
+  }
+  return cloned;
+}
+
 export default function DevPrimitivesPage(): React.JSX.Element {
   if (process.env.VERCEL_ENV === "production") notFound();
 
-  const parsed = ScanResponseSchema.parse(cfDevRaw);
+  const parsed = ScanResponseSchema.parse(normalizeFixture(cfDevRaw));
 
   // Flatten ChecksBlock → Record<CheckId, CheckResult> so we can reuse scoring.
   const flat = {} as Record<
