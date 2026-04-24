@@ -176,7 +176,7 @@ export function EvidenceTimeline({
       <ol className="flex flex-col">
         {evidence.map((step, idx) => (
           <StepCard
-            // Steps are static per render and never reordered; index is stable.
+            // action+label is unique within a single check's evidence
             key={`${step.action}-${step.label}`}
             step={step}
             index={idx}

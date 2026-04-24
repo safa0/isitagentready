@@ -99,6 +99,15 @@ export function CheckRow({ checkId, check }: CheckRowProps): React.JSX.Element {
 
   const toggle = (): void => setExpanded((v) => !v);
 
+  const auditPanel = (
+    <div data-testid="check-panel-audit">
+      <EvidenceTimeline
+        evidence={check.evidence}
+        durationMs={check.durationMs}
+      />
+    </div>
+  );
+
   return (
     <article
       data-slot="check-row"
@@ -223,21 +232,11 @@ export function CheckRow({ checkId, check }: CheckRowProps): React.JSX.Element {
                   </div>
                 </div>
               ) : (
-                <div data-testid="check-panel-audit">
-                  <EvidenceTimeline
-                    evidence={check.evidence}
-                    durationMs={check.durationMs}
-                  />
-                </div>
+                auditPanel
               )}
             </>
           ) : (
-            <div data-testid="check-panel-audit">
-              <EvidenceTimeline
-                evidence={check.evidence}
-                durationMs={check.durationMs}
-              />
-            </div>
+            auditPanel
           )}
         </div>
       ) : null}

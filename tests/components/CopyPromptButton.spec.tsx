@@ -20,6 +20,10 @@ describe("<CopyPromptButton />", () => {
     vi.useRealTimers();
   });
 
+  afterEach(() => {
+    delete (navigator as { clipboard?: unknown }).clipboard;
+  });
+
   it("writes the per-check prompt to the clipboard when clicked", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     installClipboard(writeText);
@@ -81,6 +85,7 @@ describe("<CopyPromptButton />", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const writeText = vi.fn().mockResolvedValue(undefined);
     installClipboard(writeText);
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
 
     render(<CopyPromptButton checkId="sitemap" />);
     const btn = screen.getByRole("button");
@@ -92,6 +97,8 @@ describe("<CopyPromptButton />", () => {
     });
     expect(btn).toHaveTextContent(/copied/i);
 
+    const callsAfterFirstClick = clearTimeoutSpy.mock.calls.length;
+
     // Advance partway, then click again — this should reset the 2s window.
     await act(async () => {
       vi.advanceTimersByTime(1000);
@@ -102,6 +109,10 @@ describe("<CopyPromptButton />", () => {
       await Promise.resolve();
     });
     expect(btn).toHaveTextContent(/copied/i);
+    // The second click must clear the first click's pending timer.
+    expect(clearTimeoutSpy.mock.calls.length).toBeGreaterThan(
+      callsAfterFirstClick,
+    );
 
     // Advance by just over the original 2s from the first click — should still
     // be Copied because the second click scheduled a fresh 2s window.

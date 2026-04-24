@@ -25,8 +25,7 @@ import cfDevRaw from "@/research/raw/scan-cf-dev.json" with { type: "json" };
 export const dynamic = "force-dynamic";
 
 export default function DevPrimitivesPage(): React.JSX.Element {
-  const isPublicProd = process.env.VERCEL_ENV === "production";
-  if (isPublicProd) notFound();
+  if (process.env.VERCEL_ENV === "production") notFound();
 
   const parsed = ScanResponseSchema.parse(cfDevRaw);
 
