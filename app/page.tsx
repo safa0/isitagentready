@@ -1,65 +1,216 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useMemo, useState } from "react";
+import { ScanForm } from "@/components/ScanForm";
+import { CustomizePanel } from "@/components/CustomizePanel";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import {
+  ALL_CHECK_IDS,
+  DEFAULT_ENABLED_CHECKS,
+} from "@/lib/engine/scoring";
+import type { CheckId, Profile } from "@/lib/schema";
+
+function buildInitialChecks(): Record<CheckId, boolean> {
+  const out = {} as Record<CheckId, boolean>;
+  for (const id of ALL_CHECK_IDS) {
+    out[id] = DEFAULT_ENABLED_CHECKS.includes(id);
+  }
+  return out;
+}
+
+export default function Home(): React.JSX.Element {
+  const [profile, setProfile] = useState<Profile>("all");
+  const [checks, setChecks] = useState<Record<CheckId, boolean>>(() =>
+    buildInitialChecks(),
+  );
+
+  const enabledChecks = useMemo<readonly CheckId[]>(
+    () => ALL_CHECK_IDS.filter((id) => checks[id] === true),
+    [checks],
+  );
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className="flex min-h-full flex-1 flex-col bg-background">
+      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
+        <span className="inline-flex items-center gap-2 font-semibold tracking-tight">
+          <span
+            aria-hidden="true"
+            className="inline-flex size-8 items-center justify-center rounded-lg bg-[#F6821F]/10 text-[#F6821F]"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="size-5">
+              <path
+                d="M4 14a5 5 0 015-5h1a6 6 0 0110.87 3.5A3.5 3.5 0 0119 19H7a3 3 0 01-3-3v-2z"
+                fill="currentColor"
+              />
+            </svg>
+          </span>
+          <span className="text-sm text-foreground/80">Agent Ready</span>
+        </span>
+        <div className="flex items-center gap-2">
+          <a
+            href="https://github.com/safa0/isitagentready"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-full border border-[#F6821F]/60 px-4 py-1.5 text-sm font-medium text-[#F6821F] hover:bg-[#F6821F]/10"
+          >
+            Learn more about Agents
+            <span aria-hidden="true">↗</span>
+          </a>
+          <ThemeToggle />
+        </div>
+      </header>
+
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center gap-8 px-6 pb-16 pt-8 sm:pt-16">
+        <section className="flex flex-col items-center gap-4 text-center">
+          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+            Is Your Site Agent-Ready?
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
+          <p className="max-w-xl text-base leading-relaxed text-foreground/80 sm:text-lg">
+            Scan your website to see how ready it is for AI agents. We check
+            multiple emerging standards — from robots.txt and{" "}
             <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              className="text-[#F6821F] underline underline-offset-2"
+              href="https://developers.cloudflare.com/agents/"
+              target="_blank"
+              rel="noreferrer"
             >
-              Templates
+              Markdown negotiation
             </a>{" "}
-            or the{" "}
+            to{" "}
             <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              className="text-[#F6821F] underline underline-offset-2"
+              href="https://modelcontextprotocol.io/"
+              target="_blank"
+              rel="noreferrer"
             >
-              Learning
+              MCP
+            </a>
+            , OAuth,{" "}
+            <a
+              className="text-[#F6821F] underline underline-offset-2"
+              href="https://a2aprotocol.ai/"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Agent Skills
             </a>{" "}
-            center.
+            and agentic commerce.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+        </section>
+
+        <section className="flex w-full flex-col items-start gap-3">
+          <ScanForm
+            profile={profile}
+            enabledChecks={
+              enabledChecks.length === ALL_CHECK_IDS.length
+                ? undefined
+                : enabledChecks
+            }
+          />
+          <CustomizePanel
+            profile={profile}
+            onProfileChange={setProfile}
+            checks={checks}
+            onCheckChange={setChecks}
+            isCommerce={true}
+          />
+        </section>
+
+        <section className="w-full">
+          <Accordion className="flex flex-col gap-3">
+            <AccordionItem
+              value="what"
+              className="rounded-2xl border border-border bg-card px-5"
+            >
+              <AccordionTrigger className="py-4 text-base">
+                What do we check?
+              </AccordionTrigger>
+              <AccordionContent>
+                <p>
+                  We run 19 independent checks across five categories:
+                  discoverability, content accessibility, bot access control,
+                  API/auth/MCP discovery, and agentic commerce. Each check is a
+                  lightweight probe against well-known URLs and response
+                  headers. No authentication, no crawl — one pass per check.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem
+              value="improve"
+              className="rounded-2xl border border-border bg-card px-5"
+            >
+              <AccordionTrigger className="py-4 text-base">
+                What&apos;s the easiest way to improve my score?
+              </AccordionTrigger>
+              <AccordionContent>
+                <p>
+                  Start with robots.txt and a sitemap — these unlock Level 1 on
+                  their own. Then add explicit AI-bot rules and a Content
+                  Signals policy to reach Level 2. The results page shows the
+                  exact failing check and gives you a ready-to-paste prompt for
+                  your coding agent.
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem
+              value="learn"
+              className="rounded-2xl border border-border bg-card px-5"
+            >
+              <AccordionTrigger className="py-4 text-base">
+                Where can I learn more?
+              </AccordionTrigger>
+              <AccordionContent>
+                <p>
+                  We track open standards across the ecosystem: the{" "}
+                  <a
+                    href="https://modelcontextprotocol.io/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Model Context Protocol
+                  </a>
+                  ,{" "}
+                  <a
+                    href="https://a2aprotocol.ai/"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Agent-to-Agent
+                  </a>
+                  , OAuth 2.0 Protected Resource Metadata, and emerging agentic
+                  commerce protocols (x402, MPP, UCP, ACP, AP2).
+                </p>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </section>
+
+        <p className="mt-4 max-w-2xl text-center text-xs text-muted-foreground">
+          These are AI-generated recommendations. AI can make mistakes. Please
+          use your professional judgment when implementing these tips, as they
+          are provided &quot;as-is&quot;.
+        </p>
       </main>
+
+      <footer className="border-t border-border">
+        <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4 text-xs text-muted-foreground">
+          <span>© {new Date().getFullYear()} Agent Ready</span>
+          <a
+            href="https://github.com/safa0/isitagentready"
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-foreground"
+          >
+            GitHub
+          </a>
+        </div>
+      </footer>
     </div>
   );
 }
